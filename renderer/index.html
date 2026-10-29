@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>封面制作器</title>
+<!-- 界面中英切换（2026-10-29）：字典 + 切换引擎，必须在所有界面脚本之前 -->
+<script src="i18n-en.js"></script>
+<script src="i18n.js"></script>
 <!-- Konva 引擎：桌面版完全离线，只用同目录本地副本；缺失时顶部红色提示条 -->
 <script src="konva.min.js"></script>
     <script src="colors.js"></script>
@@ -1782,12 +1785,6 @@ window.addEventListener('DOMContentLoaded', function () {
                 <div class="split-grid" id="splitGrid"></div>
             </div>
 
-            <!-- 广告位（用户 2026-10-29）：分块框下方放 Foswift 宣传图，点了用系统浏览器打开 foswift.com（target=_blank → main.js setWindowOpenHandler → shell.openExternal）。
-                 平时藏着，每小时从左侧滑出 5 秒（定时脚本在文件最末尾） -->
-            <a class="ad-slot" id="adSlot" href="https://foswift.com/" target="_blank" rel="noopener" title="Foswift 佛手光 AI · 一站式 AI 电商视觉工作台">
-                <img src="ad-foswift.jpg" alt="Foswift 佛手光 AI · 一站式 AI 电商视觉工作台" draggable="false">
-                <span class="ad-close" id="adClose" role="button" title="关闭">×</span>
-            </a>
 
             <!-- 左栏「素材库」面板（字体库 / 贴纸 / 模板三行）2026-10-17 按用户要求整块去掉：
                  「现在已经被顶部的文字，贴纸，模板替换了」。画布下方那个框照旧默认显示字体库（openDock('fonts')），
@@ -15387,7 +15384,9 @@ window.addEventListener('DOMContentLoaded', function () {
         function hintStatus(msg) {
             const el = document.getElementById('statusText');
             if (!el) return;
-            el.textContent = String(el.textContent || '').replace(/　·　.*$/, '') + '　·　' + msg;
+            // 英文界面下 el.textContent 是翻过的英文 → 取界面翻译前的原文再拼（不然切回中文会剩半句英文）
+            const cur = window.CMI18N ? window.CMI18N.origText(el) : String(el.textContent || '');
+            el.textContent = cur.replace(/　·　.*$/, '') + '　·　' + msg;
             el.style.color = '#8a6d00';
         }
 
@@ -18593,6 +18592,13 @@ window.addEventListener('DOMContentLoaded', function () {
             tools: Object.keys(AGENT_TOOLS)
         };
     </script>
+    <!-- 广告位（用户 2026-10-29）：分块框下方放 Foswift 宣传图，点了用系统浏览器打开 foswift.com（target=_blank → main.js setWindowOpenHandler → shell.openExternal）。
+         平时藏着，每小时从左侧滑出 5 秒（定时脚本在文件最末尾）。
+         它是 fixed 浮层，放在 body 末尾、不放进左栏：左栏的 DOM 顺序有自检盯着（--split 要求分块是左栏最后一块） -->
+    <a class="ad-slot" id="adSlot" href="https://foswift.com/" target="_blank" rel="noopener" title="Foswift 佛手光 AI · 一站式 AI 电商视觉工作台">
+        <img src="ad-foswift.jpg" alt="Foswift 佛手光 AI · 一站式 AI 电商视觉工作台" draggable="false">
+        <span class="ad-close" id="adClose" role="button" title="关闭">×</span>
+    </a>
     <script>
         // 广告位定时弹出（用户 2026-10-29「平时隐藏不显示，每隔一个小时从左侧弹出显示 5 秒」）：
         //   打开软件 1.5 秒后先弹一次，之后每满 1 小时滑出一次，停 5 秒收回；鼠标停在图上就先不收，移开 5 秒后再收。

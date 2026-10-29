@@ -10,6 +10,12 @@ contextBridge.exposeInMainWorld('coverApp', {
     platform: process.platform,
     offline: true,
 
+    // 界面语言（2026-10-29）：开页面时同步取一次（renderer/i18n.js 要在画界面前就知道），切换时存到主进程并重建菜单
+    i18n: {
+        getLang: () => ipcRenderer.sendSync('settings:get-lang'),
+        setLang: (lang) => ipcRenderer.invoke('settings:set-lang', lang)
+    },
+
     library: {
         list: () => ipcRenderer.invoke('library:list'),
         import: (kind) => ipcRenderer.invoke('library:import', kind || 'material'),

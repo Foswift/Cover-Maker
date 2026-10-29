@@ -65,6 +65,33 @@ function updateUrl() {
     return a ? a.slice('--updateurl='.length) : UPDATE_URL;
 }
 function updateStateFile() { return path.join(app.getPath('userData'), 'update-state.json'); }
+// 界面语言（2026-10-29 用户「加一个设置，里面可以选择语言，中英文两种」）：存 userData/settings.json 的 lang（'zh' / 'en'），没存过 = 中文。
+//   切换入口 = 菜单栏最前面「设置 → 语言 → 中文 / English」（用户 2026-10-29「设置放在文件的前面…二级菜单只有中文和英文」）：
+//   setAppLang 存盘 + 重建菜单 + 叫渲染层换字；渲染层开页面时同步取一次（preload coverApp.i18n.getLang）。
+//   主进程自己显示的字（菜单、关于 / 使用说明 / 检查更新 / 选文件框）用 tr('中文', 'English')；渲染层的字由 renderer/i18n.js 按字典换。
+let APP_LANG = null;
+function settingsFile() { return path.join(app.getPath('userData'), 'settings.json'); }
+function readSettings() { try { return JSON.parse(fsSync.readFileSync(settingsFile(), 'utf8')) || {}; } catch (e) { return {}; } }
+function writeSettings(st) { try { fsSync.writeFileSync(settingsFile(), JSON.stringify(st, null, 2)); } catch (e) { /* 写不了就只管这一次 */ } }
+function appLang() {
+    if (!APP_LANG) APP_LANG = readSettings().lang === 'en' ? 'en' : 'zh';
+    return APP_LANG;
+}
+function tr(zh, en) { return appLang() === 'en' ? en : zh; }
+function setAppLang(lang) {
+    const st = readSettings();
+    st.lang = lang === 'en' ? 'en' : 'zh';
+    writeSettings(st);
+    APP_LANG = st.lang;
+    buildMenu();
+    const w = liveWin();
+    if (w) w.webContents.executeJavaScript('window.CMI18N && window.CMI18N.setLang(' + JSON.stringify(st.lang) + ', { fromMain: true })').catch(() => { /* 页面还没好：下次开页面会自己取 */ });
+    return st.lang;
+}
+function registerSettingsIpc() {
+    ipcMain.on('settings:get-lang', (e) => { e.returnValue = appLang(); });
+    ipcMain.handle('settings:set-lang', (_e, lang) => setAppLang(lang));
+}
 function readUpdateState() { try { return JSON.parse(fsSync.readFileSync(updateStateFile(), 'utf8')) || {}; } catch (e) { return {}; } }
 function writeUpdateState(st) { try { fsSync.writeFileSync(updateStateFile(), JSON.stringify(st, null, 2)); } catch (e) { /* 写不了就下次再查 */ } }
 // 版本号比大小：1.10.0 > 1.9.3；缺的段当 0
@@ -91,16 +118,16 @@ async function fetchLatestInfo(url) {
 async function checkForUpdates(manual) {
     const url = updateUrl();
     const cur = app.getVersion();
-    const say = (type, message, detail) => { if (!updateNoDialog && win && !win.isDestroyed()) return dialog.showMessageBox(win, { type, title: '检查更新', message, detail: detail || '' }); };
+    const say = (type, message, detail) => { if (!updateNoDialog && win && !win.isDestroyed()) return dialog.showMessageBox(win, { type, title: tr('检查更新', 'Check for Updates'), message, detail: detail || '' }); };
     if (!url) {
-        if (manual) await say('info', '还没有配置更新地址', '开发者在 main.js 的 UPDATE_URL 里填上官网 latest.json 的地址后，这里就能检查新版本了。');
+        if (manual) await say('info', tr('还没有配置更新地址', 'No update address configured'), tr('开发者在 main.js 的 UPDATE_URL 里填上官网 latest.json 的地址后，这里就能检查新版本了。', 'Once the developer sets UPDATE_URL in main.js to the website\'s latest.json, updates can be checked here.'));
         return { ok: false, reason: 'nourl' };
     }
     let info;
     try { info = await fetchLatestInfo(url); }
     catch (e) {
         console.log('[cover-maker] update check failed:', e.message);
-        if (manual) await say('warning', '检查更新失败', '连不上更新服务器，或者服务器上的版本信息有问题：' + e.message + '\n稍后再试，或者直接去官网看看。');
+        if (manual) await say('warning', tr('检查更新失败', 'Update check failed'), tr('连不上更新服务器，或者服务器上的版本信息有问题：', 'Couldn\'t reach the update server, or its version info is invalid: ') + e.message + tr('\n稍后再试，或者直接去官网看看。', '\nTry again later, or visit the website.'));
         return { ok: false, reason: 'fetch', error: e.message };
     }
     const st = readUpdateState();
@@ -111,17 +138,17 @@ async function checkForUpdates(manual) {
     const result = { ok: true, current: cur, latest: info.version, newer: newer, target: target };
     console.log('[cover-maker] update check:', JSON.stringify(result));
     if (!newer) {
-        if (manual) await say('info', '已经是最新版本', '当前版本 ' + shortVersion(cur) + '，官网上最新也是 ' + shortVersion(info.version) + '。');
+        if (manual) await say('info', tr('已经是最新版本', 'You\'re up to date'), tr('当前版本 ' + shortVersion(cur) + '，官网上最新也是 ' + shortVersion(info.version) + '。', 'Current version ' + shortVersion(cur) + '; the latest on the website is also ' + shortVersion(info.version) + '.'));
         return result;
     }
     if (!manual && st.skip === info.version) return Object.assign(result, { skipped: true });   // 用户点过「跳过这个版本」
     if (updateNoDialog || !win || win.isDestroyed()) return result;
     const notes = Array.isArray(info.notes) ? info.notes.map((n) => '· ' + n).join('\n') : String(info.notes || '');
-    const buttons = manual ? ['去下载', '以后再说'] : ['去下载', '以后再说', '跳过这个版本'];
+    const buttons = manual ? [tr('去下载', 'Download'), tr('以后再说', 'Later')] : [tr('去下载', 'Download'), tr('以后再说', 'Later'), tr('跳过这个版本', 'Skip This Version')];
     const r = await dialog.showMessageBox(win, {
-        type: 'info', title: '有新版本', buttons: buttons, defaultId: 0, cancelId: 1,
-        message: '封面制作器 ' + shortVersion(info.version) + ' 已发布（你现在用的是 ' + shortVersion(cur) + '）',
-        detail: (notes ? '更新内容：\n' + notes + '\n\n' : '') + '点「去下载」会用浏览器打开下载地址；下载后替换掉旧的程序即可，作品、模板、字体和贴纸都会保留。'
+        type: 'info', title: tr('有新版本', 'Update Available'), buttons: buttons, defaultId: 0, cancelId: 1,
+        message: tr('封面制作器 ' + shortVersion(info.version) + ' 已发布（你现在用的是 ' + shortVersion(cur) + '）', 'Cover Maker ' + shortVersion(info.version) + ' is out (you have ' + shortVersion(cur) + ')'),
+        detail: (notes ? tr('更新内容：\n', 'What\'s new:\n') + notes + '\n\n' : '') + tr('点「去下载」会用浏览器打开下载地址；下载后替换掉旧的程序即可，作品、模板、字体和贴纸都会保留。', '"Download" opens the download page in your browser; just replace the old app with the new one — your work, templates, fonts and stickers are kept.')
     });
     if (r.response === 0 && target) shell.openExternal(target);
     if (r.response === 2) { st.skip = info.version; writeUpdateState(st); }
@@ -148,11 +175,13 @@ async function offerMoveToApplications() {
         const w = liveWin();
         const translocated = require('./agent-integration/mac-env').isTranslocated(process.execPath);
         const r = await dialog.showMessageBox(w || undefined, {
-            type: 'question', title: '封面制作器',
-            message: '把「封面制作器」移到「应用程序」文件夹？',
-            detail: (translocated ? '现在软件是在 macOS 的临时位置里运行的，' : '软件现在不在「应用程序」文件夹里，')
+            type: 'question', title: tr('封面制作器', 'Cover Maker'),
+            message: tr('把「封面制作器」移到「应用程序」文件夹？', 'Move "Cover Maker" to the Applications folder?'),
+            detail: tr((translocated ? '现在软件是在 macOS 的临时位置里运行的，' : '软件现在不在「应用程序」文件夹里，')
                 + 'Claude、Cursor 等 AI 助手会找不到它（AI 调用会提示没有接口）。\n移过去之后软件会自动重新打开，以后从「应用程序」里打开就行。',
-            buttons: ['移到「应用程序」并重新打开', '以后再说'], defaultId: 0, cancelId: 1, noLink: true
+                (translocated ? 'The app is running from a temporary macOS location, ' : 'The app isn\'t in the Applications folder, ')
+                + 'so AI assistants like Claude and Cursor can\'t find it (AI calls will report no interface).\nAfter moving, the app reopens automatically; open it from Applications from then on.'),
+            buttons: [tr('移到「应用程序」并重新打开', 'Move to Applications and Reopen'), tr('以后再说', 'Later')], defaultId: 0, cancelId: 1, noLink: true
         });
         if (r.response !== 0) return;
         // 「应用程序」里已有旧版本 → 替换
@@ -160,8 +189,8 @@ async function offerMoveToApplications() {
         if (!moved) throw new Error('没有移动成功');
     } catch (e) {
         try {
-            await dialog.showMessageBox(liveWin() || undefined, { type: 'warning', title: '封面制作器', message: '没能自动移过去',
-                detail: '请手动把「封面制作器」拖进「访达 → 应用程序」文件夹，再从那里打开。\n（' + (e && e.message || e) + '）', buttons: ['好'] });
+            await dialog.showMessageBox(liveWin() || undefined, { type: 'warning', title: tr('封面制作器', 'Cover Maker'), message: tr('没能自动移过去', 'Couldn\'t move it automatically'),
+                detail: tr('请手动把「封面制作器」拖进「访达 → 应用程序」文件夹，再从那里打开。', 'Please drag "Cover Maker" into Finder → Applications yourself, then open it from there.') + '\n（' + (e && e.message || e) + '）', buttons: [tr('好', 'OK')] });
         } catch (e2) { /* 窗口没了 */ }
     }
 }
@@ -659,10 +688,10 @@ function registerLibraryIpc() {
     ipcMain.handle('library:import', async (_e, kind) => {
         const k = normKind(kind);
         const r = await dialog.showOpenDialog(win, {
-            title: k === 'sticker' ? '导入贴纸（建议透明背景 PNG）' : '导入素材图片',
-            buttonLabel: '导入',
+            title: k === 'sticker' ? tr('导入贴纸（建议透明背景 PNG）', 'Import Stickers (transparent PNG recommended)') : tr('导入素材图片', 'Import Images'),
+            buttonLabel: tr('导入', 'Import'),
             properties: ['openFile', 'multiSelections'],
-            filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }]
+            filters: [{ name: tr('图片', 'Images'), extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }]
         });
         if (r.canceled || !r.filePaths.length) return readLibrary();
         return addLibraryFiles(r.filePaths, k);
@@ -682,12 +711,12 @@ function registerLibraryIpc() {
 function registerImagePickIpc() {
     ipcMain.handle('images:pick', async () => {
         const r = await dialog.showOpenDialog(win, {
-            title: '导入图片到画布',
-            buttonLabel: '导入',
+            title: tr('导入图片到画布', 'Import Images to Canvas'),
+            buttonLabel: tr('导入', 'Import'),
             properties: ['openFile', 'multiSelections'],
             filters: [
-                { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] },
-                { name: '所有文件', extensions: ['*'] }
+                { name: tr('图片', 'Images'), extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] },
+                { name: tr('所有文件', 'All Files'), extensions: ['*'] }
             ]
         });
         if (r.canceled) return { paths: [] };
@@ -1569,10 +1598,10 @@ function registerFontIpc() {
         let files = fontImportPlan();      // §0.99.18 修：只有**非空**的顶替清单才算自检顶替，否则一律弹原生对话框
         if (!files) {
             const r = await dialog.showOpenDialog(win, {
-                title: '导入字体文件',
-                buttonLabel: '导入',
+                title: tr('导入字体文件', 'Import Font Files'),
+                buttonLabel: tr('导入', 'Import'),
                 properties: ['openFile', 'multiSelections'],
-                filters: [{ name: '字体文件（*.ttf / *.otf / *.ttc / *.otc）', extensions: ['ttf', 'otf', 'ttc', 'otc'] }]
+                filters: [{ name: tr('字体文件（*.ttf / *.otf / *.ttc / *.otc）', 'Font files (*.ttf / *.otf / *.ttc / *.otc)'), extensions: ['ttf', 'otf', 'ttc', 'otc'] }]
             });
             if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true, added: [], skipped: [], list: readImportedFonts() };
             files = r.filePaths;
@@ -1940,8 +1969,8 @@ function registerExportIpc() {
         let dir = EXPORT_DIR_OVERRIDE;
         if (!dir) {
             const r = await dialog.showOpenDialog(win, {
-                title: '选择导出文件夹（' + list.length + ' 张）',
-                buttonLabel: '导出到这里',
+                title: tr('选择导出文件夹（' + list.length + ' 张）', 'Choose Export Folder (' + list.length + ' images)'),
+                buttonLabel: tr('导出到这里', 'Export Here'),
                 properties: ['openDirectory', 'createDirectory']
             });
             if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
@@ -18721,9 +18750,22 @@ function runAppCommand(w, cmd) {
 function buildMenu() {
     const template = [
         {
-            label: '文件',
+            // 设置（用户 2026-10-29：放在「文件」前面，里面只有「语言」，语言的二级菜单只有中文 / 英文）
+            label: tr('设置', 'Settings'),
             submenu: [
-                { label: '导入图片到画布…', accelerator: 'CmdOrCtrl+I', click: () => sendCommand('import-canvas') },
+                {
+                    label: tr('语言', 'Language'),
+                    submenu: [
+                        { label: '中文', type: 'radio', checked: appLang() === 'zh', click: () => setAppLang('zh') },
+                        { label: 'English', type: 'radio', checked: appLang() === 'en', click: () => setAppLang('en') }
+                    ]
+                }
+            ]
+        },
+        {
+            label: tr('文件', 'File'),
+            submenu: [
+                { label: tr('导入图片到画布…', 'Import Images to Canvas…'), accelerator: 'CmdOrCtrl+I', click: () => sendCommand('import-canvas') },
                 // 2026-10-17 用户「文件菜单去掉导入字体模板，把选中的文字存入字体库，导入贴纸，恢复内置贴纸」→ 四条撤掉，入口都还在：
                 //   · 导入字体模板… / 把选中的文字存入字体库… → 「文字」菜单里同名两条（命令 id 不变）；
                 //   · 导入贴纸… → 顶栏贴纸弹出框右上角「＋ 导入贴纸」（命令 import-stickers 渲染层还认）；
@@ -18731,67 +18773,67 @@ function buildMenu() {
                 // 「保存为模板」菜单项也按用户要求先撤（2026-09-29：「模板，先不用实现保存模板功能」）。
                 // 要加回来：取消下面这行注释（渲染层的 saveAsTemplate / MYTPL 一套都还在）。
                 // { label: '保存为模板', accelerator: 'CmdOrCtrl+S', click: () => sendCommand('save-template') },
-                { label: '导出…', accelerator: 'CmdOrCtrl+E', click: () => sendCommand('export') },
+                { label: tr('导出…', 'Export…'), accelerator: 'CmdOrCtrl+E', click: () => sendCommand('export') },
                 { type: 'separator' },
-                { role: 'quit', label: '退出' }
+                { role: 'quit', label: tr('退出', 'Quit') }
             ]
         },
         {
-            label: '编辑',
+            label: tr('编辑', 'Edit'),
             submenu: [
-                { label: '撤销', accelerator: 'CmdOrCtrl+Z', click: () => sendCommand('undo') },
-                { label: '重做', accelerator: 'CmdOrCtrl+Shift+Z', click: () => sendCommand('redo') },
+                { label: tr('撤销', 'Undo'), accelerator: 'CmdOrCtrl+Z', click: () => sendCommand('undo') },
+                { label: tr('重做', 'Redo'), accelerator: 'CmdOrCtrl+Shift+Z', click: () => sendCommand('redo') },
                 // Windows 习惯也认 Ctrl+Y（同一个命令，两条快捷键）
-                { label: '重做（备用快捷键）', accelerator: 'CmdOrCtrl+Y', visible: false, click: () => sendCommand('redo') },
+                { label: tr('重做（备用快捷键）', 'Redo (alternate shortcut)'), accelerator: 'CmdOrCtrl+Y', visible: false, click: () => sendCommand('redo') },
                 { type: 'separator' },
                 // §0.97m：剪切/复制/粘贴原来是 Electron 的 role（只对 DOM 生效 —— 比如文字编辑器里的选中文字）。
                 //   现在画布上**选中的对象**也要能复制粘贴（用户 2026-10-07：「框选后 ctrl+c ctrl+v」）→
                 //   改成自定义命令转给渲染层；渲染层里**正在打字时不抢**，DOM 自己的复制粘贴在输入框里照旧。
-                { label: '剪切', accelerator: 'CmdOrCtrl+X', click: () => sendCommand('cut') },
-                { label: '复制', accelerator: 'CmdOrCtrl+C', click: () => sendCommand('copy') },
-                { label: '粘贴', accelerator: 'CmdOrCtrl+V', click: () => sendCommand('paste') },
+                { label: tr('剪切', 'Cut'), accelerator: 'CmdOrCtrl+X', click: () => sendCommand('cut') },
+                { label: tr('复制', 'Copy'), accelerator: 'CmdOrCtrl+C', click: () => sendCommand('copy') },
+                { label: tr('粘贴', 'Paste'), accelerator: 'CmdOrCtrl+V', click: () => sendCommand('paste') },
                 { type: 'separator' },
                 // §5.9（用户 2026-10-14，参考 PS）：⌘J / Ctrl+J = 选中的图层原地复制一份（副本在原件正上方）
-                { label: '复制图层', accelerator: 'CmdOrCtrl+J', click: () => sendCommand('dup-layers') }
+                { label: tr('复制图层', 'Duplicate Layers'), accelerator: 'CmdOrCtrl+J', click: () => sendCommand('dup-layers') }
             ]
         },
         {
-            label: '视图',
+            label: tr('视图', 'View'),
             submenu: [
                 // 2026-10-24 PS 参考线：Ctrl/⌘+R 让给「标尺」（同 PS），重新载入改用 F5
-                { role: 'reload', label: '重新载入', accelerator: 'F5' },
+                { role: 'reload', label: tr('重新载入', 'Reload'), accelerator: 'F5' },
                 { type: 'separator' },
-                { label: '标尺', accelerator: 'CmdOrCtrl+R', click: () => sendCommand('guides-rulers') },
-                { label: '显示 / 隐藏参考线', accelerator: 'CmdOrCtrl+;', click: () => sendCommand('guides-show') },
-                { label: '对齐到参考线', accelerator: 'CmdOrCtrl+Shift+;', click: () => sendCommand('guides-snap') },
-                { label: '锁定 / 解锁参考线', accelerator: 'CmdOrCtrl+Alt+;', click: () => sendCommand('guides-lock') },
-                { label: '智能参考线', click: () => sendCommand('guides-smart') },
-                { label: '新建参考线…', click: () => sendCommand('guides-new') },
-                { label: '新建参考线版面…', click: () => sendCommand('guides-layout') },
-                { label: '清除参考线', click: () => sendCommand('guides-clear') },
+                { label: tr('标尺', 'Rulers'), accelerator: 'CmdOrCtrl+R', click: () => sendCommand('guides-rulers') },
+                { label: tr('显示 / 隐藏参考线', 'Show / Hide Guides'), accelerator: 'CmdOrCtrl+;', click: () => sendCommand('guides-show') },
+                { label: tr('对齐到参考线', 'Snap to Guides'), accelerator: 'CmdOrCtrl+Shift+;', click: () => sendCommand('guides-snap') },
+                { label: tr('锁定 / 解锁参考线', 'Lock / Unlock Guides'), accelerator: 'CmdOrCtrl+Alt+;', click: () => sendCommand('guides-lock') },
+                { label: tr('智能参考线', 'Smart Guides'), click: () => sendCommand('guides-smart') },
+                { label: tr('新建参考线…', 'New Guide…'), click: () => sendCommand('guides-new') },
+                { label: tr('新建参考线版面…', 'New Guide Layout…'), click: () => sendCommand('guides-layout') },
+                { label: tr('清除参考线', 'Clear Guides'), click: () => sendCommand('guides-clear') },
                 // 「开发者工具」2026-10-17 按用户要求撤掉（菜单项连同它自带的 Ctrl+Shift+I / ⌥⌘I 快捷键一起没了）；
                 //   开发调试要用：npm run dev（带 --dev 启动会自动打开，见 createWindow）
                 { type: 'separator' },
-                { role: 'resetZoom', label: '实际大小' },
-                { role: 'zoomIn', label: '放大' },
-                { role: 'zoomOut', label: '缩小' },
+                { role: 'resetZoom', label: tr('实际大小', 'Actual Size') },
+                { role: 'zoomIn', label: tr('放大', 'Zoom In') },
+                { role: 'zoomOut', label: tr('缩小', 'Zoom Out') },
                 { type: 'separator' },
-                { role: 'togglefullscreen', label: '全屏' }
+                { role: 'togglefullscreen', label: tr('全屏', 'Full Screen') }
             ]
         },
         {
-            label: '帮助',
+            label: tr('帮助', 'Help'),
             submenu: [
                 {
-                    label: '关于封面制作器',
+                    label: tr('关于封面制作器', 'About Cover Maker'),
                     click: () => {
                         dialog.showMessageBox(win, {
                             type: 'info',
-                            title: '关于',
+                            title: tr('关于', 'About'),
                             // 2026-10-17 用户「关于封面制作器修改一下内容，就简单介绍一下这个软件功能，然后版本定位1.0版本」
                             //   版本号来自 package.json（1.0.0）→ 显示成「1.0」
-                            message: '封面制作器 ' + String(app.getVersion()).replace(/\.0$/, ''),
-                            detail: [
+                            message: tr('封面制作器 ', 'Cover Maker ') + String(app.getVersion()).replace(/\.0$/, ''),
+                            detail: tr([
                                 '给短视频 / 图文平台做封面的桌面工具。',
                                 '',
                                 '· 平台框：抖音、小红书、哔哩哔哩、快手、头条、视频号的封面比例，勾上就有对应的框，导出按框出图',
@@ -18801,24 +18843,34 @@ function buildMenu() {
                                 '· 颜色：色盘、配色方案、从照片提色、吸管',
                                 '',
                                 '除了「检查更新」会读一下官网上的版本信息，其余完全离线：作品、字体和素材都只存在这台电脑上。'
-                            ].join('\n')
+                            ].join('\n'), [
+                                'A desktop tool for making covers for short-video / image-post platforms.',
+                                '',
+                                '· Platform frames: cover ratios for Douyin, Xiaohongshu, Bilibili, Kuaishou, Toutiao and WeChat Channels — check one to get its frame; export renders one image per frame',
+                                '· Photos: drop into a frame to fill it, split layouts, rotate, skew, eraser, Extract Subject (Mac)',
+                                '· Text: installed and imported fonts, stroke, shadow, spacing, text on a path',
+                                '· Stickers and templates: built-in emoji stickers, import your own images; save a layout as a template and apply it to frames of the same ratio in one click',
+                                '· Color: color wheel, palettes, colors from photos, eyedropper',
+                                '',
+                                'Apart from "Check for Updates" reading the version info on the website, it works fully offline: your work, fonts and assets stay on this computer.',
+                            ].join('\n'))
                         });
                     }
                 },
                 // 2026-10-20：「AI 调用…」菜单项已去掉（用户「不想在帮助里面看到」；只藏入口，服务照常默认开）。要恢复：
                 // { label: 'AI 调用…', click: () => { MCP.showDialog(liveWin() || undefined).catch((e) => console.log('[cover-maker] MCP dialog error:', e.message)); } },
                 // 2026-10-17：检查更新（地址在 UPDATE_URL；没填时点了会说「还没有配置更新地址」）
-                { label: '检查更新…', click: () => { checkForUpdates(true).catch((e) => console.log('[cover-maker] update check error:', e.message)); } },
+                { label: tr('检查更新…', 'Check for Updates…'), click: () => { checkForUpdates(true).catch((e) => console.log('[cover-maker] update check error:', e.message)); } },
                 { type: 'separator' },
                 // 使用说明（放在「关于」后面）：给用户一份「能在里面查到东西」的操作清单
                 {
-                    label: '使用说明',
+                    label: tr('使用说明', 'User Guide'),
                     click: () => {
                         dialog.showMessageBox(win, {
                             type: 'info',
-                            title: '使用说明',
-                            message: '封面制作器　怎么用',
-                            detail: [
+                            title: tr('使用说明', 'User Guide'),
+                            message: tr('封面制作器　怎么用', 'How to use Cover Maker'),
+                            detail: tr([
                                 '【加文字】双击画布空白处 → 直接打字（回车换行，Esc 取消，点别处/按 Ctrl+Enter 确定）',
                                 '　　　　　双击已有文字 → 改字；右边「属性」面板可改字体、字号、颜色、描边、阴影、角度（后三个按字号比例，改字号会一起变）',
                                 '　　　　　阴影后面那个**圆形转盘** = 阴影方向：拖小圆点或直接输度数。小圆点 = 光来的方向（0° = 正上方 → 阴影朝正下方）；往哪边拖，阴影就往**反方向**投',
@@ -18857,7 +18909,46 @@ function buildMenu() {
                                 '　Ctrl+C / Ctrl+V / Ctrl+X 复制 / 粘贴 / 剪切**选中的对象**（只对文字、贴纸生效）',
                                 '　Ctrl+E 导出　Ctrl+I 导入图片　Delete / 退格 / 回车 删除选中的元素（可 Ctrl+Z 撤销）',
                                 '　拖文字时：参考框里会出现中心十字虚线，靠近框中心会自动吸附（±6px；贴纸/图片不吸附）',
-                            ].join('\n')
+                            ].join('\n'), [
+                                '[Add text] Double-click empty canvas → type directly (Enter = new line, Esc = cancel, click elsewhere / Ctrl+Enter = confirm)',
+                                '　　Double-click existing text → edit it; the panel on the right changes font, size, color, stroke, shadow, angle (the last three scale with font size)',
+                                '　　The **round dial** after Shadow = shadow direction: drag the dot or type degrees. The dot = where the light comes from (0° = straight above → shadow straight down); the shadow falls the **opposite** way',
+                                '[Text on path] **Right-click the canvas → Text on Path**: **press and drag** on the canvas; release = path done (the stroke from press to release is the path; drag back to the start = closed), Esc to exit',
+                                '　　Then move the mouse onto the path (the cursor becomes a text cursor) and click → type; text follows the path; Enter = confirm, Esc = discard',
+                                '　　Path text can be scaled, rotated, and change font, size, color and stroke; double-click it = edit',
+                                '　　Path text drawn inside a frame is a child of the frame like text and stickers: moving / scaling the frame carries the text and curve along; anything outside the frame is hidden',
+                                '　　**Drag the text = move curve and text together**; click to select, double-click to edit as usual',
+                                '　　When selected, each end of the text has a small blue arrow: **click** = move one character along the curve; **drag the arrow** = slide continuously (stops at the ends; text never leaves the curve; longer text shifts back automatically), Ctrl+Z to undo',
+                                '[Add images] Drag images from a folder onto the canvas, or "File → Import Images to Canvas…"',
+                                '　　Images **show only inside the frames**: while dragging you see the whole image (the part outside is semi-transparent); release and the outside part is hidden',
+                                '　　Images **can be dragged off the canvas**: the part outside is hidden; once fully outside you can\'t click it → select it in the "Layers" list on the right, or Ctrl+Z',
+                                '　　(Stickers and text still move only within the canvas)',
+                                '[Stickers] Top bar "Stickers": pick from groups in the popup, click to add to the canvas; "＋ Import Stickers" at the top right imports your own images (make your own groups, delete stickers)',
+                                '　　× at a sticker\'s top right = delete it (asks first); to get deleted built-in emoji back: "↺ Restore deleted emoji" below the list on the left of the popup',
+                                '[Layers] The "Layers" list on the right: click a row to select it, **drag a row up / down** to reorder (like PS), ✕ at the end deletes',
+                                '[Frames] Click platform names in the left panel — **multiple allowed** (click again to remove; the last one clicked is the main platform = used for export)',
+                                '　　Frames with the same ratio merge into one: Douyin + Xiaohongshu + Kuaishou + WeChat Channels give only 3:4 and 4:3; adding Bilibili / Toutiao adds 16:9 and 9:16',
+                                '　　Frames are guides: they can\'t be dragged and don\'t block editing',
+                                '[New system fonts] Fonts newly installed in the system appear after the app\'s font cache expires (24 hours); to use one right away → top bar "Text" → "＋ Import Fonts" to import the font file',
+                                '[Import fonts] Top bar "Text" popup, top right "＋ Import Fonts": bring in .ttf / .otf / .ttc (CapCut cloud fonts, downloaded fonts) **directly, no system install needed**',
+                                '　　Imported fonts appear in the "Font" dropdown on the right (marked "imported", **the whole group at the top**); pick one on the canvas to use it; templates with missing fonts prefer them too',
+                                '　　With many fonts, type a few letters in the "Search fonts" box below the dropdown; **frequently used fonts move up** (the imported group always stays on top)',
+                                '　　To remove one: in the "Text" popup, hover the font and click × (deletes the font file too); system fonts are **read automatically**, nothing to manage',
+                                '[Copy / paste] **Drag a box** on the canvas (press on empty space and drag; all **text and stickers** inside are selected, photos aren\'t) or click an object → Ctrl+C copy → Ctrl+V paste',
+                                '　　Pasted items are offset slightly and stay selected (drag them to another frame, e.g. from portrait to landscape); Ctrl+X = cut; Ctrl+Z to undo',
+                                '　　⚠ Only **text / stickers** can be copied: photos imported to the canvas aren\'t (to move a photo, drag the whole frame, or double-click and drag it alone)',
+                                '[Templates] Green "Save as Template" at the top (or Ctrl+S): **each frame is saved as its own template**, storing only its text / stickers / path text (not photos); frames without text or stickers aren\'t saved',
+                                '　　Top bar "Templates" groups them by ratio (3:4 portrait / 4:3 landscape / 16:9 …); click one → "Apply to Canvas" lands only in frames of the **same ratio**, replacing their text and stickers; photos stay (Ctrl+Z works)',
+                                '　　No frame with the same ratio on the canvas → you\'ll be asked to "choose the platforms you publish to"; check the matching platform on the left first; old whole-canvas templates are in the "Old templates" group and still replace the whole canvas',
+                                '[Export] Yellow button at the top: one image per frame, at each platform\'s standard pixel size, **always on a white background**',
+                                '[AI] While the app is open, tell an AI such as Claude or Cursor: "Use Cover Maker to make a cover; it\'s at http://127.0.0.1:37651 — open that address first to read the instructions", and the AI can do it for you (only reachable from this computer)',
+                                '',
+                                'Shortcuts:',
+                                '　Ctrl+Z undo　Ctrl+Shift+Z / Ctrl+Y redo',
+                                '　Ctrl+C / Ctrl+V / Ctrl+X copy / paste / cut **selected objects** (text and stickers only)',
+                                '　Ctrl+E export　Ctrl+I import images　Delete / Backspace / Enter deletes the selected element (Ctrl+Z to undo)',
+                                '　While dragging text: a dashed center cross appears in the frame and text snaps near the center (±6px; stickers / images don\'t snap)',
+                            ].join('\n'))
                         });
                     }
                 }
@@ -18894,6 +18985,7 @@ if (IS_MCP_BRIDGE) {
     app.whenReady().then(() => {
         hardenNetwork();
         registerLibraryIpc();
+        registerSettingsIpc();
         registerTemplateIpc();
         registerImagePickIpc();
         registerExportIpc();
