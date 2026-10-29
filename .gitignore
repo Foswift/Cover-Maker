@@ -1,0 +1,23 @@
+node_modules/
+dist/
+release/
+out/
+*.log
+.DS_Store
+Thumbs.db
+build/icon_*.png
+
+# 不公开的东西（2026-10-29 上传 GitHub 前加）
+_bak/
+backup/
+.tickets/
+docs/
+Progress.md
+site/download/
+tools/__pycache__/
+tools/jy-probe*.js
+tools/publish.env
+tools/nginx-cover-maker.conf
+tools/jy-*.js
+tools/tpl-*.js
+tools/selftest-all.sh

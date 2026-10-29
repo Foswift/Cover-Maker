@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/Users/me"] },
+    "cover-maker": { "command": "C:/old/封面制作器.exe", "args": ["--mcp-stdio"] }
+  },
+  "globalShortcut": "Ctrl+Space"
+}

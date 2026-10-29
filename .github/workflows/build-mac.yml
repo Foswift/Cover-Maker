@@ -1,0 +1,61 @@
+name: build-mac
+
+# 正规路线：在真 macOS 上打包 + 用苹果自己的 codesign 做 ad-hoc 签名。
+# 为什么还要有这个：Windows 上跨平台打出来的包（见 tools/build-mac.py）能用，但：
+#   ① 符号链接要解引用成实体副本（Windows 无权限建链接）→ 包级签名只能靠 rcodesign 模拟
+#   ② 没法公证（notarize）
+# 在真 Mac 上跑就没这些事：packager 正常处理符号链接，codesign 是原生的，签名一定有效。
+#
+# 用法：把这个仓库推到 GitHub，然后在 Actions 里手动跑这个 workflow（或打 v* 标签自动跑），
+#       跑完在 Artifacts 里下 封面制作器-mac-*.zip。
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 装依赖
+        run: npm i
+
+      - name: 打 arm64 包（Apple 芯片）
+        run: |
+          npx electron-packager . "封面制作器" \
+            --platform=darwin --arch=arm64 --out=dist \
+            --icon=build/icon.icns \
+            --app-bundle-id=com.foswift.covermaker \
+            --app-version=0.1.0 \
+            --overwrite --prune=true --asar \
+            --ignore="^/(dist|tools|build)(/|\$)" --ignore="\.md\$"
+
+      - name: ad-hoc 签名（没开发者证书也能在本机跑）
+        run: |
+          APP="dist/封面制作器-darwin-arm64/封面制作器.app"
+          codesign --force --deep --sign - \
+            --entitlements build/entitlements.mac.plist "$APP"
+          codesign --verify --verbose=2 "$APP"
+
+      - name: 打 zip（ditto 保住权限和符号链接，别用普通 zip）
+        run: |
+          cd dist/封面制作器-darwin-arm64
+          ditto -c -k --sequesterRsrc --keepParent "封面制作器.app" \
+            "$GITHUB_WORKSPACE/封面制作器-mac-arm64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cover-maker-mac-arm64
+          path: 封面制作器-mac-arm64.zip
+
+      # 有 Apple 开发者证书的话（仓库 secrets 里配 CSC_LINK / CSC_KEY_PASSWORD），
+      # 这里可以换成正式签名 + 公证，用户双击就不会再被 Gatekeeper 拦：
+      #   codesign --force --deep --options runtime --sign "Developer ID Application: XXX" ...
+      #   xcrun notarytool submit ... --wait && xcrun stapler staple ...

@@ -1,0 +1,20 @@
+{
+  "version": "1.0.0",
+  "date": "2026-10-17",
+  "notes": [
+    "首个公开版本",
+    "平台引导框：抖音 / 小红书 / 快手 / 哔哩哔哩 / 视频号 / 头条",
+    "贴纸、字体库、图层、我的模板、一键按平台导出"
+  ],
+  "page": "https://foswift.com/download",
+  "downloads": [
+    {
+      "os": "mac",
+      "arch": "arm64",
+      "label": "macOS · Apple 芯片",
+      "hint": "M1 / M2 / M3 / M4 …",
+      "file": "download/cover-maker-mac-arm64-1.0.0.zip",
+      "size": 127619496
+    }
+  ]
+}

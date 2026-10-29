@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>封面制作器 下载 - 佛手光</title>
+<meta name="description" content="封面制作器：一次做好抖音、小红书、快手、哔哩哔哩、视频号、头条的视频封面。免费下载 macOS 版。">
+<link rel="canonical" href="https://foswift.com/cover-maker/">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<!--
+  封面制作器下载页（2026-10-19）
+  · 和 latest.json 放同一目录（服务器上 /var/www/cover-maker/ → https://foswift.com/cover-maker/）；
+  · 版本号 / 更新内容 / 下载按钮全部从 latest.json 读，发新版只改 latest.json，不用改这个页面；
+  · downloads[].file / extras[].file 是相对本页的路径（download/xxx.zip），也可以填完整 https 地址（比如放 OSS）。
+-->
+<style>
+:root {
+  --bg: #f6f6f4;
+  --card: #ffffff;
+  --text: #1d1d1f;
+  --muted: #6e6e73;
+  --line: #e4e4e0;
+  --accent: #f4c51c;
+  --accent-ink: #231815;
+  --soft: #f0efea;
+  --ok: #2e7d32;
+  --err: #c62828;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141414;
+    --card: #1e1e1e;
+    --text: #f2f2f2;
+    --muted: #a1a1a6;
+    --line: #2f2f2f;
+    --soft: #262626;
+    --ok: #81c784;
+    --err: #ef9a9a;
+  }
+  .brand img { filter: invert(1) hue-rotate(180deg); }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: inherit; }
+.wrap { width: min(100% - 32px, 880px); margin: 0 auto; }
+
+header { padding: 22px 0; }
+.brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; }
+.brand img { height: 28px; display: block; }
+
+.hero { padding: 40px 0 28px; display: flex; gap: 28px; align-items: center; }
+.hero .app-icon { width: 112px; height: 112px; border-radius: 26px; flex: none; box-shadow: 0 10px 30px rgba(0,0,0,.12); }
+.hero h1 { margin: 0; font-size: 36px; line-height: 1.2; letter-spacing: .5px; }
+.hero p { margin: 8px 0 0; color: var(--muted); font-size: 16px; }
+.ver { display: inline-flex; gap: 8px; align-items: center; margin-top: 12px; font-size: 13px; color: var(--muted); }
+.ver b { color: var(--text); font-weight: 600; }
+.pill { padding: 2px 10px; border-radius: 999px; background: var(--soft); }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 24px; margin-bottom: 16px; }
+.card h2 { margin: 0 0 14px; font-size: 18px; }
+
+.primary {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+}
+.btn {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 14px 26px; border-radius: 12px; border: 0;
+  background: var(--accent); color: var(--accent-ink);
+  font: inherit; font-size: 16px; font-weight: 700; text-decoration: none; cursor: pointer;
+  transition: transform .1s, filter .15s;
+}
+.btn:hover { filter: brightness(1.04); }
+.btn:active { transform: scale(.98); }
+.btn svg { width: 20px; height: 20px; }
+.btn.ghost { background: var(--soft); color: var(--text); font-weight: 600; padding: 10px 18px; font-size: 14px; }
+.primary .meta { color: var(--muted); font-size: 14px; }
+
+.list { margin: 18px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+.list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.list li:last-child { border-bottom: 0; padding-bottom: 0; }
+.list .name { font-weight: 600; }
+.list .sub { color: var(--muted); font-size: 13px; }
+.list .soon { color: var(--muted); font-size: 14px; }
+
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+ol, ul.dots { margin: 0; padding-left: 1.3em; }
+ol li, ul.dots li { margin: 6px 0; }
+.tip { color: var(--muted); font-size: 13px; margin-top: 12px; }
+code { background: var(--soft); padding: 1px 6px; border-radius: 6px; font-size: .92em; }
+
+.state { color: var(--muted); font-size: 14px; }
+.state.err { color: var(--err); }
+
+footer { padding: 28px 0 48px; color: var(--muted); font-size: 13px; text-align: center; }
+footer a { color: var(--muted); }
+
+@media (max-width: 640px) {
+  .hero { flex-direction: column; align-items: flex-start; gap: 18px; padding-top: 16px; }
+  .hero .app-icon { width: 84px; height: 84px; border-radius: 20px; }
+  .hero h1 { font-size: 28px; }
+  .grid { grid-template-columns: 1fr; }
+  .btn { width: 100%; justify-content: center; }
+  .list li { flex-direction: column; align-items: stretch; }
+  .list .btn.ghost { width: 100%; }
+}
+</style>
+</head>
+<body>
+<header class="wrap">
+  <a class="brand" href="https://foswift.com/" title="佛手光"><img src="foswift-icon.svg" alt="佛手光 Foswift"></a>
+</header>
+
+<main class="wrap">
+  <section class="hero">
+    <img class="app-icon" src="icon.png" alt="">
+    <div>
+      <h1>封面制作器</h1>
+      <p>一张画布，同时做好抖音、小红书、快手、哔哩哔哩、视频号、头条的视频封面。</p>
+      <div class="ver" id="ver"><span class="pill">正在读取最新版本…</span></div>
+    </div>
+  </section>
+
+  <section class="card" id="dl">
+    <div class="primary">
+      <div id="primary"><span class="state">正在读取下载信息…</span></div>
+      <div class="meta" id="primaryMeta"></div>
+    </div>
+    <ul class="list" id="all"></ul>
+  </section>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Mac 怎么安装</h2>
+      <ol>
+        <li>双击下载的 zip 解压，得到「封面制作器.app」和「首次打开.command」。</li>
+        <li>双击「封面制作器.app」打开。</li>
+        <li>如果提示「无法检查其是否包含恶意软件」：右键点它 → 选「打开」→ 再点「打开」，只需一次。</li>
+        <li>如果还是打不开（提示「已损坏」）：双击「首次打开.command」，跑完就能正常打开了。</li>
+      </ol>
+      <p class="tip">升级新版本：下载后直接替换旧的「封面制作器.app」，作品、模板、字体和贴纸都会保留。</p>
+    </section>
+    <section class="card">
+      <h2 id="notesTitle">更新内容</h2>
+      <ul class="dots" id="notes"><li class="state">—</li></ul>
+      <p class="tip">软件启动时会自动检查新版本，也可以在「帮助 → 检查更新…」里手动检查。</p>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>能做什么</h2>
+    <ul class="dots">
+      <li>各平台封面比例的引导框，一次排好、每个平台各导出一张</li>
+      <li>文字描边 / 阴影 / 斜切 / 字间距 / 文字路径，内置字体库</li>
+      <li>贴纸、图层、提取主体、吸管取色、橡皮擦</li>
+      <li>「我的模板」：存下排版，下次一键套用；撤销重做不限步数</li>
+      <li>完全离线运行，图片不上传</li>
+    </ul>
+  </section>
+</main>
+
+<footer class="wrap">
+  © 佛手光 Foswift · <a href="https://foswift.com/">foswift.com</a>
+</footer>
+
+<script>
+(function () {
+  var ICON_DL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>';
+  var OS_NAME = { mac: 'macOS', win: 'Windows' };
+  var $ = function (id) { return document.getElementById(id); };
+
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function size(n) {
+    if (!n) return '';
+    if (n >= 1e9) return (n / 1073741824).toFixed(2) + ' GB';
+    return Math.round(n / 1048576) + ' MB';
+  }
+  function shortVer(v) { return String(v || '').replace(/\.0$/, ''); }
+
+  // 猜访客的系统；Mac 再猜一下芯片（WebGL 渲染器里带 Apple M 的是 Apple 芯片），猜不出就不挑
+  function detect() {
+    var p = ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '') + ' ' + navigator.userAgent;
+    var os = /Mac|iPhone|iPad/i.test(p) ? 'mac' : /Win/i.test(p) ? 'win' : '';
+    var arch = '';
+    if (os === 'mac') {
+      try {
+        var gl = document.createElement('canvas').getContext('webgl');
+        var ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
+        var r = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : '';
+        if (/Apple/i.test(r) && !/Intel/i.test(r)) arch = 'arm64';
+        else if (/Intel|AMD|Radeon/i.test(r)) arch = 'x64';
+      } catch (e) { /* 猜不出就算了 */ }
+    }
+    return { os: os, arch: arch };
+  }
+
+  function row(d, label) {
+    return '<li><div><div class="name">' + esc(label || d.label) + '</div><div class="sub">' +
+      esc([d.hint, size(d.size)].filter(Boolean).join(' · ')) + '</div></div>' +
+      '<a class="btn ghost" href="' + esc(d.file) + '" download>' + ICON_DL + '下载</a></li>';
+  }
+
+  function render(info) {
+    var v = shortVer(info.version);
+    $('ver').innerHTML = '<span class="pill">最新版 <b>' + esc(v) + '</b></span>' + (info.date ? '<span>' + esc(info.date) + ' 发布</span>' : '');
+    $('notesTitle').textContent = v + ' 更新内容';
+    var notes = Array.isArray(info.notes) ? info.notes : (info.notes ? [info.notes] : []);
+    $('notes').innerHTML = notes.length ? notes.map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') : '<li class="state">—</li>';
+
+    var dls = Array.isArray(info.downloads) ? info.downloads.filter(function (d) { return d && d.file; }) : [];
+    var me = detect();
+    var mine = dls.filter(function (d) { return d.os === me.os; });
+    var best = mine.length === 1 ? mine[0] : mine.filter(function (d) { return me.arch && d.arch === me.arch; })[0];
+
+    if (best) {
+      $('primary').innerHTML = '<a class="btn" href="' + esc(best.file) + '" download>' + ICON_DL + '下载 ' + esc(best.label) + ' 版</a>';
+      $('primaryMeta').textContent = [best.hint, size(best.size)].filter(Boolean).join(' · ');
+    } else if (me.os && !mine.length) {
+      $('primary').innerHTML = '<span class="state">' + esc(OS_NAME[me.os] || '') + ' 版还在准备中，敬请期待。</span>';
+    } else {
+      $('primary').innerHTML = '<span class="state">选择适合你电脑的版本：</span>';
+    }
+
+    var html = dls.map(function (d) { return row(d); }).join('');
+    ['mac', 'win'].forEach(function (os) {
+      if (!dls.some(function (d) { return d.os === os; })) {
+        html += '<li><div><div class="name">' + OS_NAME[os] + '</div></div><span class="soon">即将推出</span></li>';
+      }
+    });
+    (Array.isArray(info.extras) ? info.extras : []).forEach(function (x) { if (x && x.file) html += row(x); });
+    $('all').innerHTML = html;
+  }
+
+  fetch('latest.json?t=' + Date.now(), { cache: 'no-store' })
+    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(render)
+    .catch(function () {
+      $('ver').innerHTML = '';
+      $('primary').innerHTML = '<span class="state err">暂时读取不到下载信息，请稍后刷新再试。</span>';
+    });
+})();
+</script>
+</body>
+</html>

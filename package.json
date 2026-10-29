@@ -1,0 +1,23 @@
+{
+  "name": "cover-maker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "封面制作器（Windows / macOS 桌面版）",
+  "main": "main.js",
+  "scripts": {
+    "check": "node tools/syntax-check.js",
+    "test:agent": "node tools/test-agent.js",
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build:mac": "python tools/build-mac.py --arch arm64 x64",
+    "build:mac:arm64": "python tools/build-mac.py --arch arm64",
+    "build:mac:x64": "python tools/build-mac.py --arch x64"
+  },
+  "devDependencies": {
+    "@electron/fuses": "^1.8.0",
+    "@electron/packager": "^20.3.0",
+    "electron": "43.1.0",
+    "javascript-obfuscator": "^4.1.1"
+  },
+  "license": "PolyForm-Noncommercial-1.0.0"
+}
