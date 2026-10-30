@@ -425,6 +425,8 @@ window.addEventListener('DOMContentLoaded', function () {
         color: #555;
         text-shadow: 0 -1px 0 rgba(0,0,0,0.25), 0 1px 0 rgba(255,255,255,0.9);
     }
+    /* 英文标题字母比中文更密：语言切换器会给 <html> 写 data-lang。 */
+    html[data-lang="en"] .menu-title-engraved { letter-spacing: 1px; }
     .menu-item {
         font-size: 13px;
         color: var(--text-muted);
