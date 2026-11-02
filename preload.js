@@ -69,7 +69,10 @@ contextBridge.exposeInMainWorld('coverApp', {
         list: () => ipcRenderer.invoke('mytpl:list'),
         save: (tpl) => ipcRenderer.invoke('mytpl:save', tpl),
         rename: (id, name) => ipcRenderer.invoke('mytpl:rename', id, name),
-        remove: (id) => ipcRenderer.invoke('mytpl:remove', id)
+        remove: (id) => ipcRenderer.invoke('mytpl:remove', id),
+        // 2026-11-02 模板给别人用：导出成 .cmtpl（图片一起带走）/ 导入（图片落到本机，应用时不上画布；缺字体由页面提示）
+        exportPack: (ids) => ipcRenderer.invoke('mytpl:export', Array.isArray(ids) ? ids : []),
+        importPack: () => ipcRenderer.invoke('mytpl:import')
     },
 
     getPathForFile: (file) => {

@@ -895,10 +895,239 @@ function registerMyTemplateIpc() {
             for (const L of (it.layers || [])) {                     // 2026-10-24 随模板存的原图 / 主体图片一起删（只删模板文件夹里的）
                 if (L && L.file && path.dirname(L.file) === myTplDir()) { try { await fs.rm(L.file, { force: true }); } catch (e) { /* 删不掉不影响 */ } }
             }
+            // 2026-11-02：导入的模板会把图片放在 tpl-thumbs/pack/<id>/ 里 → 删模板时整包删掉，别留垃圾
+            try { await fs.rm(path.join(myTplDir(), 'pack', String(it.id)), { recursive: true, force: true }); } catch (e) { /* 没这个目录很正常 */ }
             list.splice(i, 1);
             await writeMyTemplates(list);
         }
         return { ok: i >= 0, thumbRemoved: thumbRemoved, items: list };
+    });
+
+    // ==================== 模板导出 / 导入（2026-11-02）====================
+    // 用户原话：「导出的话图片也一起带走，但是别人导入使用时图片还是不导入，如果没有的字体会提示用户」
+    //   ① 导出：一个 `.cmtpl`（就是一份 JSON）里除了模板记录，还带**缩略图 + 模板引用的图片**（base64）——
+    //      模板里的贴纸 / 原图 / 主体都是引用本机文件路径，不带走的话对方那边是一片空白；
+    //   ② 导入：解到本机 tpl-thumbs/pack/<新id>/ 下，把 thumb / layers[].file / images[].src.path 全部改写成本机路径，
+    //      重新分配 id、重名加「（收到）」后缀 → 合并进 my-templates.json，**不覆盖对方已有的模板**；
+    //   ③ 应用口径不变（M-entry「模板存图片、应用不用」）：照片照旧不放上画布，图片只用于缩略图 / 回存；
+    //   ④ 字体：本机没装的字体在**导入后**由渲染层比对字体表，弹一条清单提示（按同类字体替代）。
+    // 自检用：--tplpackout=<文件> / --tplpackin=<文件> 跳过文件对话框（同 --exportdir 那条路子）。
+    ipcMain.handle('mytpl:export', async (_e, ids) => {
+        const list = await readMyTemplates();
+        const want = Array.isArray(ids) ? ids.map(String) : [];
+        const pick = want.length ? list.filter((x) => want.indexOf(String(x.id)) >= 0) : list;
+        if (!pick.length) return { ok: false, reason: '还没有模板可以导出' };
+        const pack = { format: 'cover-maker-template', v: 1, app: 'cover-maker', appVersion: '', exportedAt: Date.now(), templates: [], missing: [] };
+        try { pack.appVersion = String(require('../package.json').version || ''); } catch (e) { /* 打包后取不到就算了 */ }
+        const extOf = (p, dflt) => { const e = String(path.extname(String(p || '')) || dflt || '.png').toLowerCase(); return /^\.[a-z0-9]{1,5}$/.test(e) ? e : '.png'; };
+        const readB64 = async (p) => {
+            try {
+                const st = await fs.stat(p);
+                if (!st.isFile() || st.size > 80 * 1024 * 1024) return '';
+                return (await fs.readFile(p)).toString('base64');
+            } catch (e) { return ''; }
+        };
+        for (const rec of pick) {
+            const t = JSON.parse(JSON.stringify(rec));       // 改副本，别动真实记录
+            const files = [];
+            if (t.thumb) {
+                const b = await readB64(t.thumb);
+                if (b) t._thumbB64 = b; else pack.missing.push((t.name || t.id) + ' 的缩略图');
+                t.thumb = '';
+            }
+            (t.layers || []).forEach((L, i) => {
+                if (!L || !L.file) return;
+                files.push({ key: 'L' + i, ext: extOf(L.file), path: L.file });      // 先记下来，下面统一读
+                L.file = '';
+            });
+            (t.images || []).forEach((im, i) => {
+                const src = (im && im.src) || null;
+                if (!src || !src.path) return;                                      // 内联 dataURL 的本来就带在 src.data 里
+                files.push({ key: 'I' + i, ext: extOf(src.path), path: src.path });
+                src.path = '';
+            });
+            const kept = [];
+            for (const f of files) {
+                const b = await readB64(f.path);
+                if (b) kept.push({ key: f.key, ext: f.ext, b64: b });
+                else pack.missing.push((t.name || t.id) + ' 引用的图片 ' + String(path.basename(f.path)));
+            }
+            // 节点 attrs 里也有一份 srcPath（绝对路径）→ 清掉：对方机器上是死路径，导入时按 images[].i 的对应关系再填回来
+            (t.nodes || []).forEach((n) => { const a = n && n.attrs; if (a && a.srcPath) a.srcPath = ''; });
+            t.filePack = kept;
+            pack.templates.push(t);
+        }
+        // 2026-11-02 用户「把对应字体文件也带上，这样就不会缺字体了」：
+        //   模板里用到的每个字体族 → 找本机字体文件（导入的优先，再系统字体表）→ 字节一起打进包；
+        //   导入时写进「导入字体」库（fonts-imported.json + userData/fonts/），对方那边**真的不缺字**，渲染也一致。
+        //   找不到文件的（比如只在系统里登记、文件读不出来）→ 记进 missing，导出后照实告诉导出的人。
+        const fams = [], famSeen = {};
+        const walkFam = (n) => {
+            if (!n || typeof n !== 'object') return;
+            const f = String(((n.attrs || {}).fontFamily) || '').trim();
+            if (f && !famSeen[f]) { famSeen[f] = 1; fams.push(f); }
+            (n.children || []).forEach(walkFam);
+        };
+        pack.templates.forEach((t) => (t.nodes || []).forEach(walkFam));
+        pack.fonts = [];
+        for (const fam of fams) {
+            let file = '';
+            try { file = fontFileForFamily(fam) || ''; } catch (e) { file = ''; }
+            if (!file) { pack.missing.push('字体「' + fam + '」的文件'); continue; }
+            const b = await readB64(file);
+            if (!b) { pack.missing.push('字体「' + fam + '」的文件（太大或读不到）'); continue; }
+            const ext = (path.extname(String(file)) || '.ttf').toLowerCase();
+            if (!FONT_FILE_EXT_RE.test('x' + ext)) { pack.missing.push('字体「' + fam + '」的文件（不是 ttf/otf/ttc）'); continue; }
+            pack.fonts.push({ family: fam, name: path.basename(String(file)), ext: ext, b64: b });
+        }
+        let outFile = String(process.env.CM_TPL_PACK_OUT || '').trim()
+            || ((process.argv.find((a) => a.startsWith('--tplpackout=')) || '').slice('--tplpackout='.length));
+        if (!outFile) {
+            const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '').replace(/-/g, '');
+            const r = await dialog.showSaveDialog(liveWin() || undefined, {
+                title: '导出模板（可以发给别人）',
+                defaultPath: 'cover-template-' + stamp + '.cmtpl',
+                filters: [{ name: '封面制作器模板', extensions: ['cmtpl'] }]
+            });
+            if (r.canceled || !r.filePath) return { ok: false, canceled: true, reason: '已取消' };
+            outFile = r.filePath;
+        }
+        if (!/\.cmtpl$/i.test(outFile)) outFile += '.cmtpl';
+        try {
+            await fs.writeFile(outFile, JSON.stringify(pack), 'utf8');
+        } catch (e) {
+            return { ok: false, reason: '写文件失败：' + e.message };
+        }
+        console.log('[cover-maker] mytpl: 导出 ' + pack.templates.length + ' 个模板 → ' + outFile
+            + '（图片 ' + pack.templates.reduce((n, t) => n + (t.filePack || []).length, 0) + ' 个'
+            + (pack.missing.length ? '，缺 ' + pack.missing.length + ' 个文件' : '') + '）');
+        return { ok: true, file: outFile, templates: pack.templates.length,
+                 images: pack.templates.reduce((n, t) => n + (t.filePack || []).length, 0), missing: pack.missing };
+    });
+
+    ipcMain.handle('mytpl:import', async () => {
+        let inFile = String(process.env.CM_TPL_PACK_IN || '').trim()
+            || ((process.argv.find((a) => a.startsWith('--tplpackin=')) || '').slice('--tplpackin='.length));
+        if (!inFile) {
+            const r = await dialog.showOpenDialog(liveWin() || undefined, {
+                title: '导入模板（.cmtpl）',
+                properties: ['openFile'],
+                filters: [{ name: '封面制作器模板', extensions: ['cmtpl'] }]
+            });
+            if (r.canceled || !r.filePaths || !r.filePaths.length) return { ok: false, canceled: true, reason: '已取消' };
+            inFile = r.filePaths[0];
+        }
+        let pack = null;
+        try {
+            const st = await fs.stat(inFile);
+            if (st.size > 300 * 1024 * 1024) return { ok: false, reason: '模板文件太大（>300MB）' };
+            pack = JSON.parse(await fs.readFile(inFile, 'utf8'));
+        } catch (e) {
+            return { ok: false, reason: '打不开这个文件：' + e.message };
+        }
+        if (!pack || pack.format !== 'cover-maker-template' || !Array.isArray(pack.templates) || !pack.templates.length) {
+            return { ok: false, reason: '不是封面制作器的模板文件（.cmtpl）' };
+        }
+        // 2026-11-02：包里带的字体 → 装进「导入字体」库（只装模板用到的；一个个装 → 好对上真实族名）
+        const famMap = {};                       // 包里的族名 → 本机真正可用的族名（字体文件 name 表才算数）
+        const fontAdded = [], fontSkipped = [];
+        if (Array.isArray(pack.fonts) && pack.fonts.length) {
+            let tmpDir = '';
+            try {
+                tmpDir = await fs.mkdtemp(path.join(app.getPath('temp'), 'cm-tplfont-'));
+                for (const f of pack.fonts.slice(0, 40)) {
+                    const orig = String((f && f.family) || '').trim();
+                    const ext = /^\.[a-z0-9]{1,5}$/i.test(String((f && f.ext) || '')) ? String(f.ext).toLowerCase() : '.ttf';
+                    if (!f || !f.b64 || !orig || !FONT_FILE_EXT_RE.test('x' + ext)) continue;
+                    const p = path.join(tmpDir, 'tplfont-' + Math.random().toString(36).slice(2, 8) + ext);
+                    try { await fs.writeFile(p, Buffer.from(String(f.b64), 'base64')); } catch (e) { continue; }
+                    const r1 = importFontFiles([p]);
+                    if (r1.added && r1.added.length) {
+                        const fam = String((r1.added[0] && r1.added[0].family) || orig);
+                        fontAdded.push(fam);
+                        if (fam !== orig) famMap[orig] = fam;      // 文件里的真名和包里的族名不一致 → 模板里的字跟着改
+                    } else {
+                        fontSkipped.push({ family: orig, reason: (((r1.skipped || [])[0]) || {}).reason || '' });
+                    }
+                }
+            } catch (e) {
+                console.error('[cover-maker] 模板里带的字体没装上:', e.message);
+            } finally {
+                if (tmpDir) fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+            }
+        }
+        const list = await readMyTemplates();
+        const names = list.map((x) => String(x.name || ''));
+        const uniqName = (base) => {
+            const b = String(base || '').trim() || '收到的模板';
+            if (names.indexOf(b) < 0) { names.push(b); return b; }
+            let n = b + '（收到）';
+            let k = 2;
+            while (names.indexOf(n) >= 0) { n = b + '（收到 ' + k + '）'; k++; }
+            names.push(n);
+            return n;
+        };
+        const added = [];
+        const skipped = [];
+        for (const src of pack.templates.slice(0, 200)) {
+            if (!src || typeof src !== 'object') continue;
+            const id = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6) + 'i';
+            const dir = path.join(myTplDir(), 'pack', id);
+            const rec = JSON.parse(JSON.stringify(src));
+            delete rec.filePack; delete rec._thumbB64;
+            rec.id = id;
+            rec.name = uniqName(rec.name);
+            rec.importedAt = Date.now();
+            // 包里的族名 → 本机装进来的真名（同一个字体文件，字形完全一样，只是名字不同）
+            if (Object.keys(famMap).length) {
+                const remap = (n) => {
+                    if (!n || typeof n !== 'object') return;
+                    if (n.attrs && famMap[n.attrs.fontFamily]) n.attrs.fontFamily = famMap[n.attrs.fontFamily];
+                    (n.children || []).forEach(remap);
+                };
+                (rec.nodes || []).forEach(remap);
+            }
+            try {
+                await fs.mkdir(dir, { recursive: true });
+                // 缩略图
+                if (src._thumbB64) {
+                    const f = path.join(myTplDir(), id + '.png');
+                    await fs.writeFile(f, Buffer.from(String(src._thumbB64), 'base64'));
+                    rec.thumb = f;
+                } else rec.thumb = '';
+                // 图片（原图 / 主体 / 贴纸引用）→ 落到 pack/<id>/ 里，再把路径写回记录
+                const map = {};
+                for (const f of (src.filePack || []).slice(0, 400)) {
+                    if (!f || !f.b64 || !/^[LI]\d+$/.test(String(f.key))) continue;
+                    const ext = /^\.[a-z0-9]{1,5}$/i.test(String(f.ext || '')) ? String(f.ext).toLowerCase() : '.png';
+                    const p = path.join(dir, String(f.key) + ext);
+                    await fs.writeFile(p, Buffer.from(String(f.b64), 'base64'));
+                    map[String(f.key)] = p;
+                }
+                (rec.layers || []).forEach((L, i) => { if (L && map['L' + i]) L.file = map['L' + i]; });
+                (rec.images || []).forEach((im, i) => {
+                    const p = map['I' + i];
+                    if (!im || !p) return;
+                    if (!im.src) im.src = {};
+                    im.src.path = p;
+                    // 节点 attrs.srcPath 一起改回本机路径（模板回存 / 图层面板显示文件名都读它）
+                    const nd = Array.isArray(rec.nodes) ? rec.nodes[Number(im.i)] : null;
+                    if (nd && nd.attrs) nd.attrs.srcPath = p;
+                });
+                if (!Array.isArray(rec.images)) rec.images = [];
+                list.unshift(rec);                       // 导进来的排最前
+                added.push(rec.name);
+            } catch (e) {
+                skipped.push(String(rec.name) + '：' + e.message);
+            }
+        }
+        if (!added.length) return { ok: false, reason: skipped.length ? ('导入失败：' + skipped[0]) : '文件里没有能导入的模板' };
+        await writeMyTemplates(list);
+        console.log('[cover-maker] mytpl: 导入 ' + added.length + ' 个模板（' + added.join('、') + '）'
+            + (fontAdded.length ? '，随包装字体 ' + fontAdded.length + ' 个（' + fontAdded.join('、') + '）' : '')
+            + (skipped.length ? '，跳过 ' + skipped.length + ' 个' : ''));
+        return { ok: true, file: inFile, added: added, items: list, skipped: skipped,
+                 fonts: { added: fontAdded, skipped: fontSkipped } };
     });
 }
 
@@ -13788,6 +14017,147 @@ function createWindow() {
                         '⑥有框时整段落在框里+选中+折行': p6, '⑦Ctrl+Shift+V只粘系统文字(内部有过对象也照粘)': p7, ok: sysPasteOk }));
                 }
 
+                // 可选场景：--tplio 模板导出 / 导入（2026-11-02 用户「导出的话图片也一起带走，但是别人导入使用时图片还是不导入，
+                //   如果没有的字体会提示用户」）
+                //   判据：① 存 1 个模板（竖框里一段文字 + 一张贴纸，贴纸引用真文件）→ 导出成功、包里带了缩略图 + 图片
+                //        ② 导出文件里**没有本机绝对路径**（否则对方那边缩略图 / 贴纸全是空白）
+                //        ③ 导入 → 多出 1 个模板、名字带「（收到）」、id 换新、缩略图和图片都落到本机且真实存在
+                //        ④ 导入的模板里没有「素材」（照片）节点 → 应用时图片照旧不上画布
+                //        ⑤ 把包里的字体改成本机没装的再导入一次 → 页面提示「本机没装的字体」且提示层真的打开
+                //   需要 --tplpackout=<文件>（同时当导入文件用）+ --img=<一张真图>
+                let tplIoOk = true;
+                if (process.argv.includes('--tplio')) {
+                    const js = (x) => win.webContents.executeJavaScript(x);
+                    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+                    const outFile = (process.argv.find((a) => a.startsWith('--tplpackout=')) || '').slice('--tplpackout='.length) || 'C:/tmp/cm_tplio.cmtpl';
+                    const imgPath = (process.argv.find((a) => a.startsWith('--img=')) || '').slice('--img='.length) || 'C:/tmp/cm_test.png';
+                    const FAKE = 'FakeFont-NotInstalled-XYZ';
+                    // ① 造模板 + 导出 + 第一次导入
+                    const res = await js(`(async function () {
+                        const out = {};
+                        window.__cmHistoryReset();
+                        activePlatforms.length = 0; activePlatforms.push('douyin'); mainPlatform = 'douyin';
+                        syncPlatformMenu(); drawPlatformFrame();
+                        const frames = computeFrames();
+                        out.frames = frames.length;
+                        out.before = MYTPL.items.length;
+                        const f0 = frames[0], c = contentRect(f0.rect);
+                        const tx = makeTextNode(c.x + 12, c.y + 40); tx.text('导出测试文字'); tx.setAttr('fillFrame', f0.gk); mainLayer.add(tx);
+                        const img = await loadImageFile(${JSON.stringify(imgPath)});
+                        out.imgOk = !!img.ok;
+                        if (img.ok) {
+                            const w = Math.max(20, Math.min(90, c.width * 0.5));
+                            const h = w * (img.im.naturalHeight || 1) / Math.max(1, img.im.naturalWidth);
+                            const st = new Konva.Image({ image: img.im, x: c.x + 12, y: c.y + c.height - h - 14, width: w, height: h, name: '贴纸', draggable: true });
+                            st.setAttr('srcPath', ${JSON.stringify(imgPath)});
+                            st.setAttr('srcName', 'cm_test.png');
+                            st.setAttr('fillFrame', f0.gk);
+                            mainLayer.add(st);
+                        }
+                        mainLayer.draw(); refreshLayers();
+                        const sv = await saveAsTemplate();
+                        out.saved = sv && sv.ok ? (sv.saved || []).length : 0;
+                        out.savedId = (sv && sv.ok && sv.saved && sv.saved[0] && sv.saved[0].id) || '';
+                        window.__cmTplIoSavedId = out.savedId;
+                        out.saveReason = (sv && sv.reason) || '';
+                        out.afterSave = MYTPL.items.length;
+                        const ex = await window.coverApp.myTemplates.exportPack([]);
+                        out.export = ex ? { ok: !!ex.ok, file: ex.file || '', templates: ex.templates || 0, images: ex.images || 0,
+                                            missing: (ex.missing || []).length, reason: ex.reason || '' } : null;
+                        const im1 = await window.coverApp.myTemplates.importPack();
+                        out.import1 = im1 ? { ok: !!im1.ok, added: (im1.added || []).slice(), reason: im1.reason || '',
+                                              fonts: ((im1.fonts && im1.fonts.added) || []).slice() } : null;
+                        if (im1 && im1.ok) { MYTPL.items = im1.items || MYTPL.items; try { await loadFonts(true); } catch (e) {} renderMyTemplates(); }
+                        out.afterImport = MYTPL.items.length;
+                        const nr = MYTPL.items.filter(function (x) { return (out.import1 && out.import1.added || []).indexOf(x.name) >= 0; })[0] || null;
+                        out.newRec = nr ? {
+                            id: nr.id, name: nr.name, thumb: nr.thumb || '',
+                            imgPath: ((nr.images || [])[0] && (nr.images || [])[0].src && (nr.images || [])[0].src.path) || '',
+                            nodes: (nr.nodes || []).length,
+                            hasPhotoNode: (nr.nodes || []).some(function (n) { return ((n && n.attrs) || {}).name === '素材'; })
+                        } : null;
+                        return out;
+                    })()`);
+                    await wait(300);
+                    // ② 包内容检查（主进程读文件）
+                    let pack = null, packTxt = '';
+                    try { packTxt = fsSync.readFileSync(outFile, 'utf8'); pack = JSON.parse(packTxt); } catch (e) { pack = null; }
+                    const t0 = pack && pack.templates && pack.templates[0] ? pack.templates[0] : null;
+                    // ⚠ 落盘检查必须**现在**做：后面收尾会把导入的模板连同缩略图 / 图片一起删掉
+                    const diskThumb = !!(res.newRec && res.newRec.thumb && fsSync.existsSync(res.newRec.thumb));
+                    const diskImg = !!(res.newRec && res.newRec.imgPath && fsSync.existsSync(res.newRec.imgPath));
+                    // ②b 随包装的字体：导入后「本机缺字体」应该变成 0（用户 2026-11-02「把对应字体文件也带上，这样就不会缺字体了」）
+                    const fontAfter1 = await js(`(async function () {
+                        const recs = MYTPL.items.filter(function (x) { return String(x.name || '').indexOf('（收到') >= 0; });
+                        try { await loadFonts(true); } catch (e) {}
+                        const miss = await checkImportedFonts(recs);
+                        return { recs: recs.length, miss: miss.map(function (m) { return m.title; }), imported: (FONTS.imported || []).length };
+                    })()`);
+                    // ③ 把包里的字体改成本机没有的 → 再导入一次 → 检查页面提示
+                    let fakeDone = false;
+                    if (pack && t0 && Array.isArray(t0.nodes) && t0.nodes.length) {
+                        const walk = (n) => {
+                            if (!n || typeof n !== 'object') return;
+                            if (n.attrs && n.attrs.fontFamily) n.attrs.fontFamily = FAKE;
+                            (n.children || []).forEach(walk);
+                        };
+                        t0.nodes.forEach(walk);
+                        try { fsSync.writeFileSync(outFile, JSON.stringify(pack), 'utf8'); fakeDone = true; } catch (e) { fakeDone = false; }
+                    }
+                    const im2 = await js('window.coverApp.myTemplates.importPack()');
+                    await js('(async function () { MYTPL.items = (await window.coverApp.myTemplates.list()) || []; try { await loadFonts(true); } catch (e) {} renderMyTemplates(); return true; })()');
+                    await wait(300);
+                    const fontRes = await js(`(async function () {
+                        const recs = MYTPL.items.filter(function (x) { return String(x.name || '').indexOf('（收到') >= 0; });
+                        const miss = await checkImportedFonts(recs);
+                        const shown = showImportedFontWarn(miss);
+                        const mask = document.getElementById('fontWarnMask');
+                        return { recs: recs.length, shown: !!shown, maskActive: !!(mask && mask.classList.contains('active')),
+                                 titles: miss.map(function (m) { return m.title; }) };
+                    })()`);
+                    const cleanup = await js(`(async function () {
+                        MYTPL.items = (await window.coverApp.myTemplates.list()) || MYTPL.items;
+                        const ids = MYTPL.items.filter(function (x) { return String(x.name || '').indexOf('（收到') >= 0; }).map(function (x) { return x.id; });
+                        if (window.__cmTplIoSavedId) ids.push(window.__cmTplIoSavedId);
+                        for (const id of ids) { try { await window.coverApp.myTemplates.remove(id); } catch (e) {} }
+                        MYTPL.items = (await window.coverApp.myTemplates.list()) || [];
+                        renderMyTemplates();
+                        try { closeFontWarn(); } catch (e) {}
+                        mainLayer.find('.文字').concat(mainLayer.find('.贴纸')).forEach(function (n) { if (n.getParent() === mainLayer) n.destroy(); });
+                        tr.nodes([]); selectedNode = null;
+                        activePlatforms.length = 0; mainPlatform = null; syncPlatformMenu(); drawPlatformFrame();
+                        mainLayer.draw(); refreshLayers(); window.__cmHistoryReset();
+                        return { left: MYTPL.items.length, deleted: ids.length };
+                    })()`);
+                    const p1 = res.frames >= 2 && res.saved === 1 && !!res.export && res.export.ok
+                        && res.export.templates === res.afterSave && res.export.images >= 1;
+                    const p2 = !!t0 && String(t0.thumb || '') === '' && String(t0._thumbB64 || '').length > 500
+                        && (t0.filePack || []).length >= 1 && String(((t0.filePack || [])[0] || {}).b64 || '').length > 100
+                        && Array.isArray(pack.fonts) && pack.fonts.length >= 1 && String((pack.fonts[0] || {}).b64 || '').length > 1000
+                        && packTxt.indexOf('AppData') < 0 && packTxt.indexOf('Users\\\\') < 0;
+                    const p2b = !!fontAfter1 && fontAfter1.recs >= 1 && fontAfter1.miss.length === 0;
+                    const p3parts = {
+                        imported: !!(res.import1 && res.import1.ok),
+                        count: res.afterImport === res.afterSave + res.export.templates,
+                        rec: !!res.newRec, named: !!(res.newRec && res.newRec.name.indexOf('（收到') >= 0),
+                        newId: !!t0 && !!res.newRec && res.newRec.id !== t0.id,
+                        thumbFile: diskThumb,
+                        imgFile: diskImg && res.newRec.imgPath.indexOf('pack') >= 0
+                    };
+                    const p3 = p3parts.imported && p3parts.count && p3parts.rec && p3parts.named && p3parts.newId && p3parts.thumbFile && p3parts.imgFile;
+                    const p4 = !!res.newRec && res.newRec.hasPhotoNode === false && res.newRec.nodes >= 2;
+                    const p5 = fakeDone && !!im2 && im2.ok && fontRes.recs >= 1
+                        && fontRes.titles.indexOf(FAKE) >= 0 && fontRes.shown && fontRes.maskActive;
+                    const p6 = !!cleanup && cleanup.left === res.before;      // 收尾：导入的两份都删干净、原有模板没动
+                    tplIoOk = p1 && p2 && p2b && p3 && p4 && p5 && p6;
+                    console.log('[cover-maker] selftest tplio 数据:', JSON.stringify({ res, pack: t0 ? { thumb: String(t0._thumbB64 || '').length, files: (t0.filePack || []).length, fonts: (pack.fonts || []).map((f) => f.family + ':' + String(f.b64 || '').length) } : null, fontAfter1, im2: im2 && { ok: !!im2.ok, added: (im2.added || []).slice(), fonts: (im2.fonts && im2.fonts.added) || [] }, fontRes, cleanup }));
+                    console.log('[cover-maker] selftest tplio 判据:', JSON.stringify({
+                        '①存1个模板→导出成功(带缩略图+图片)': p1, '②包里没有本机绝对路径+带缩略图/图片/字体文件': p2,
+                        '②b 导入后随包装的字体不再算缺': p2b,
+                        '③导入多1个/名字带(收到)/图片落盘真实存在': p3, '④导入的模板里没有照片节点': p4,
+                        '⑤缺字体提示(改假字体再导入)': p5, '⑥收尾删干净且原有模板不变': p6, p3parts: p3parts, ok: tplIoOk }));
+                }
+
                 // 可选场景：--subjshadow 主体阴影（用户 2026-10-15「给提取出来的主体也加上阴影功能」）
                 //   夹具：透明底上一个红圆当「主体」（cutoutOf，走 imgClipSceneFunc），画布上没有框
                 //   判据：① 选中主体 → 文字同款阴影页和圆盘；距离从 0 改 8 → fxShadow.on、进撤销一步（不再有「开启」按钮）
@@ -18806,7 +19176,7 @@ function createWindow() {
                     && frameWhiteOk
                     && r.stickers === stickerExpect
                     && libOk && libPasteOk && libRemoveOk && frameDragOk && stickerPasteOk && multiDragOk && skipOk && skipUiOk
-                    && textPasteOk && textEditOk && sidebarOk && auditOk && undoRedoOk && layerOrderOk && platCheckOk && layersOk                    && imgDropOk && frameStackOk && fillFrameOk && ffLateOk && imgDrag2Ok && frameMoveOk && frameScaleOk && exportOk && exportCancelOk && sharpOk && tplOk && fontUiOk && fontDockOk && ctPanelOk && dockLibsOk && fontWarnOk && whiteShadowOk && imgClipOk && decorClipOk && frameNosOk && layerMultiOk && textPathOk && imgOutOk && moveFrameOk && moveRightOk && shrinkFillOk && frameChildrenOk && frameKeepOk && copyPasteOk && tplRenameOk && zoomShiftOk && zoomShiftPosOk && platShareOk && qProbeOk && keyDelOk && strokeModeOk && macFontsOk && canvasZoomOk && zoomProbeOk && zoomFrameOk && landFillOk && marqueeOk && snapGuideOk && save2libOk && roundtripOk && save2libUiOk && fileMenuOk && fontMenuOk && fontPlanOk && fontImportOk && imgHitOk && fontFallbackOk && textRenderOk && winLifeOk && subjectOk && skewOk && colorsOk && layerEyeOk && layerRenameOk && editScaleOk && splitSwitchOk && cellPanOk && xhs11Ok && clickFrameOk && biliNumOk && creamOk && specialScaleOk && ctxSkewOk && colorSelOk && pasteFitOk && imgSkewOk && defTabOk && splitOk && colorPinsOk && layerCopyOk && subjShadowOk && imageFxOk && copyHexOk && extractGreenOk && board18Ok && layerMultiDragOk && widenOnlyOk && defaultFontOk && textFxOk && eraserOk && photoRotateOk && eyedropOk && toggleFollowOk && updateCheckOk && shapesOk && mcpOk && agentTxOk && agentLayoutOk && agentCreateOk && agentRegOk && agentSubjectOk && agentFontOk && agentOpacityOk && agentLayersOk && textGradOk && textStyleMemoryOk && frameShapeOk && gzhOk && customRatioOk && alignOk && weightOk && guidesOk && shiftDragOk && stickerGradOk && shapeFxOk && cornerOk && bubbleTailOk && tplSubjectOk && sysPasteOk;
+                    && textPasteOk && textEditOk && sidebarOk && auditOk && undoRedoOk && layerOrderOk && platCheckOk && layersOk                    && imgDropOk && frameStackOk && fillFrameOk && ffLateOk && imgDrag2Ok && frameMoveOk && frameScaleOk && exportOk && exportCancelOk && sharpOk && tplOk && fontUiOk && fontDockOk && ctPanelOk && dockLibsOk && fontWarnOk && whiteShadowOk && imgClipOk && decorClipOk && frameNosOk && layerMultiOk && textPathOk && imgOutOk && moveFrameOk && moveRightOk && shrinkFillOk && frameChildrenOk && frameKeepOk && copyPasteOk && tplRenameOk && zoomShiftOk && zoomShiftPosOk && platShareOk && qProbeOk && keyDelOk && strokeModeOk && macFontsOk && canvasZoomOk && zoomProbeOk && zoomFrameOk && landFillOk && marqueeOk && snapGuideOk && save2libOk && roundtripOk && save2libUiOk && fileMenuOk && fontMenuOk && fontPlanOk && fontImportOk && imgHitOk && fontFallbackOk && textRenderOk && winLifeOk && subjectOk && skewOk && colorsOk && layerEyeOk && layerRenameOk && editScaleOk && splitSwitchOk && cellPanOk && xhs11Ok && clickFrameOk && biliNumOk && creamOk && specialScaleOk && ctxSkewOk && colorSelOk && pasteFitOk && imgSkewOk && defTabOk && splitOk && colorPinsOk && layerCopyOk && subjShadowOk && imageFxOk && copyHexOk && extractGreenOk && board18Ok && layerMultiDragOk && widenOnlyOk && defaultFontOk && textFxOk && eraserOk && photoRotateOk && eyedropOk && toggleFollowOk && updateCheckOk && shapesOk && mcpOk && agentTxOk && agentLayoutOk && agentCreateOk && agentRegOk && agentSubjectOk && agentFontOk && agentOpacityOk && agentLayersOk && textGradOk && textStyleMemoryOk && frameShapeOk && gzhOk && customRatioOk && alignOk && weightOk && guidesOk && shiftDragOk && stickerGradOk && shapeFxOk && cornerOk && bubbleTailOk && tplSubjectOk && sysPasteOk && tplIoOk;
                 console.log('[cover-maker] selftest 分项:', JSON.stringify({
                     基础: !!(r.konva && r.stage && r.bridge), 库面板: popupLayerOk, 底部格子: emptyBoxOk, 底边对齐: bottomOk, 启动开着的库: dockAtStart.currentLib, 框: (onlyArg || framedrag || multidrag || plArg ? r.frames > 0 : r.frames === 0), 框样式: frameWhiteOk,
                     贴纸数: r.stickers === stickerExpect, 素材库: libOk, 素材贴图: libPasteOk, 素材删除: libRemoveOk,
@@ -18814,7 +19184,7 @@ function createWindow() {
                     复制粘贴: copyPasteOk,
                     文字贴入: textPasteOk, 整组编辑: textEditOk, 左栏: sidebarOk, 体检: auditOk, 撤销重做: undoRedoOk,
                     层序: layerOrderOk, 图层面板: layersOk, 图片进画布: imgDropOk, 参考框: frameStackOk,
-                    导出: exportOk, 导出取消: exportCancelOk, 清晰度: sharpOk, 模板: tplOk, 字体库改名: tplRenameOk, 缩放后照片不漂: zoomShiftOk, '页面/窗口变了框位置不变': zoomShiftPosOk, '同比例平台=同一块框': platShareOk, '导出不压缩画质(按目标像素重渲染)': qProbeOk, 'Delete/回车快捷删除': keyDelOk, '外描边/内描边': strokeModeOk, 'Mac 字体表读族名': macFontsOk, 字体: fontUiOk, 字体库格子: fontDockOk, '文字/阴影/描边分页': ctPanelOk, 三库切格子: dockLibsOk, 字体缺失提示: fontWarnOk, 白框立体感: whiteShadowOk, 图片只在框里显示: imgClipOk, '文字/贴纸只在框里显示': decorClipOk, '图层后框编号': frameNosOk, '图层多选/复制图层/拖到框编号复制': layerMultiOk, 文字路径: textPathOk, 图片能移到画布外: imgOutOk, '照片拖到另一块框也显示': moveFrameOk, '缩小后框能拖到画布最右边': moveRightOk, '缩框后照片仍盖满整块框线': shrinkFillOk, '贴纸/文字也是框的子对象': frameChildrenOk, '改窗口后框排版守恒': frameKeepOk, 框选: marqueeOk, 中心准线: snapGuideOk, 框选存库: save2libOk, 往返一致: roundtripOk, 框选存库入口: save2libUiOk,                    画布随缩放等比: canvasZoomOk, '缩小/放大页面图不消失': zoomProbeOk, 横版拉满跟随: landFillOk, 图片拖进框自动铺满: fillFrameOk, 先拖图后开平台: ffLateOk, 框里拖图: imgDrag2Ok, '框+图整组拖': frameMoveOk, '相框等比缩放': frameScaleOk, 字体替代分平台: fontFallbackOk, 文字描边阴影尺度: textRenderOk, 窗口销毁安全: winLifeOk, 提取主体: subjectOk, 斜切: skewOk, 颜色板块: colorsOk, 图层小眼睛: layerEyeOk, 图层改名: layerRenameOk, '放大文字双击不变小': editScaleOk, '切分块照片不丢': splitSwitchOk, '格子里挪图不跑格': cellPanOk, '小红书1:1框': xhs11Ok, '点框=切数字+黄圈': clickFrameOk, '框编号同方向左边在前': biliNumOk, 奶油色主题: creamOk, '斜切后普通拖不错位': specialScaleOk, 右键斜切: ctxSkewOk, '选中文字点颜色跟着变': colorSelOk, '复制到别的框不出框': pasteFitOk, 图片斜切: imgSkewOk, 图层默认亮1: defTabOk, 分块: splitOk, 常驻颜色: colorPinsOk, '图层多选后复制粘贴': layerCopyOk, 主体阴影: subjShadowOk, '图片/贴纸描边阴影': imageFxOk, '右键复制色值': copyHexOk, '渐变小块色提得出': extractGreenOk, '提色板三排18格': board18Ok, '图层多选后画布上一起拖': layerMultiDragOk, '窗口只变宽图跟框': widenOnlyOk, 默认字体按使用次数: defaultFontOk, '字透明度/阴影透明度/阴影大小': textFxOk, 橡皮擦: eraserOk, 照片角外侧旋转: photoRotateOk, 吸管: eyedropOk, '勾平台框挪了框里东西跟着': toggleFollowOk, 检查更新: updateCheckOk, 形状: shapesOk, 'AI 调用(MCP)': mcpOk, 画布事务: agentTxOk, 自动排版落地: agentLayoutOk, 一键做封面: agentCreateOk, 自动接入Agent: agentRegOk, 'AI 抠主体': agentSubjectOk, 'AI 字体缺失提示': agentFontOk, '透明度 + 笔刷': agentOpacityOk, '文字/描边/阴影渐变': textGradOk, '最近文字样式记忆': textStyleMemoryOk, '框里的形状跟着缩放': frameShapeOk, 公众号: gzhOk, 对齐: alignOk, 字体样式: weightOk, 参考线: guidesOk, 'Shift 锁方向': shiftDragOk, 贴纸渐变: stickerGradOk, 形状同文字: shapeFxOk, 圆角: cornerOk, 气泡尾巴: bubbleTailOk, '系统剪贴板粘文字(微信复制→画布)': sysPasteOk, 模板带主体: tplSubjectOk, 帮助菜单: helpMenuOk, 字体菜单: fontMenuOk, '导入字体弹对话框(空清单不吞)': fontPlanOk, 导入字体: fontImportOk, '框外那截不可点(§0.99.21)': imgHitOk, 文件菜单: fileMenuOk
+                    导出: exportOk, 导出取消: exportCancelOk, 清晰度: sharpOk, 模板: tplOk, 字体库改名: tplRenameOk, 缩放后照片不漂: zoomShiftOk, '页面/窗口变了框位置不变': zoomShiftPosOk, '同比例平台=同一块框': platShareOk, '导出不压缩画质(按目标像素重渲染)': qProbeOk, 'Delete/回车快捷删除': keyDelOk, '外描边/内描边': strokeModeOk, 'Mac 字体表读族名': macFontsOk, 字体: fontUiOk, 字体库格子: fontDockOk, '文字/阴影/描边分页': ctPanelOk, 三库切格子: dockLibsOk, 字体缺失提示: fontWarnOk, 白框立体感: whiteShadowOk, 图片只在框里显示: imgClipOk, '文字/贴纸只在框里显示': decorClipOk, '图层后框编号': frameNosOk, '图层多选/复制图层/拖到框编号复制': layerMultiOk, 文字路径: textPathOk, 图片能移到画布外: imgOutOk, '照片拖到另一块框也显示': moveFrameOk, '缩小后框能拖到画布最右边': moveRightOk, '缩框后照片仍盖满整块框线': shrinkFillOk, '贴纸/文字也是框的子对象': frameChildrenOk, '改窗口后框排版守恒': frameKeepOk, 框选: marqueeOk, 中心准线: snapGuideOk, 框选存库: save2libOk, 往返一致: roundtripOk, 框选存库入口: save2libUiOk,                    画布随缩放等比: canvasZoomOk, '缩小/放大页面图不消失': zoomProbeOk, 横版拉满跟随: landFillOk, 图片拖进框自动铺满: fillFrameOk, 先拖图后开平台: ffLateOk, 框里拖图: imgDrag2Ok, '框+图整组拖': frameMoveOk, '相框等比缩放': frameScaleOk, 字体替代分平台: fontFallbackOk, 文字描边阴影尺度: textRenderOk, 窗口销毁安全: winLifeOk, 提取主体: subjectOk, 斜切: skewOk, 颜色板块: colorsOk, 图层小眼睛: layerEyeOk, 图层改名: layerRenameOk, '放大文字双击不变小': editScaleOk, '切分块照片不丢': splitSwitchOk, '格子里挪图不跑格': cellPanOk, '小红书1:1框': xhs11Ok, '点框=切数字+黄圈': clickFrameOk, '框编号同方向左边在前': biliNumOk, 奶油色主题: creamOk, '斜切后普通拖不错位': specialScaleOk, 右键斜切: ctxSkewOk, '选中文字点颜色跟着变': colorSelOk, '复制到别的框不出框': pasteFitOk, 图片斜切: imgSkewOk, 图层默认亮1: defTabOk, 分块: splitOk, 常驻颜色: colorPinsOk, '图层多选后复制粘贴': layerCopyOk, 主体阴影: subjShadowOk, '图片/贴纸描边阴影': imageFxOk, '右键复制色值': copyHexOk, '渐变小块色提得出': extractGreenOk, '提色板三排18格': board18Ok, '图层多选后画布上一起拖': layerMultiDragOk, '窗口只变宽图跟框': widenOnlyOk, 默认字体按使用次数: defaultFontOk, '字透明度/阴影透明度/阴影大小': textFxOk, 橡皮擦: eraserOk, 照片角外侧旋转: photoRotateOk, 吸管: eyedropOk, '勾平台框挪了框里东西跟着': toggleFollowOk, 检查更新: updateCheckOk, 形状: shapesOk, 'AI 调用(MCP)': mcpOk, 画布事务: agentTxOk, 自动排版落地: agentLayoutOk, 一键做封面: agentCreateOk, 自动接入Agent: agentRegOk, 'AI 抠主体': agentSubjectOk, 'AI 字体缺失提示': agentFontOk, '透明度 + 笔刷': agentOpacityOk, '文字/描边/阴影渐变': textGradOk, '最近文字样式记忆': textStyleMemoryOk, '框里的形状跟着缩放': frameShapeOk, 公众号: gzhOk, 对齐: alignOk, 字体样式: weightOk, 参考线: guidesOk, 'Shift 锁方向': shiftDragOk, 贴纸渐变: stickerGradOk, 形状同文字: shapeFxOk, 圆角: cornerOk, 气泡尾巴: bubbleTailOk, '系统剪贴板粘文字(微信复制→画布)': sysPasteOk, '模板导出/导入(.cmtpl 带图片)': tplIoOk, 模板带主体: tplSubjectOk, 帮助菜单: helpMenuOk, 字体菜单: fontMenuOk, '导入字体弹对话框(空清单不吞)': fontPlanOk, 导入字体: fontImportOk, '框外那截不可点(§0.99.21)': imgHitOk, 文件菜单: fileMenuOk
                 }));
                 console.log('[cover-maker] selftest ' + (ok ? 'PASS' : 'FAIL'));
                 app.exit(ok ? 0 : 1);

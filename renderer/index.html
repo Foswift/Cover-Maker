@@ -266,9 +266,11 @@ window.addEventListener('DOMContentLoaded', function () {
     .tpl-pop { width: 640px; }
     .tpp-head { position: relative; }
     .tpp-save {
-        position: absolute; right: 14px; top: 12px; height: 28px; padding: 0 12px;
+        position: absolute; right: 118px; top: 12px; height: 28px; padding: 0 12px;       /* 2026-11-02：右边并排三个（存为模板 / 导出 / 导入），默认位留给「存为模板」 */
         border: 1px solid #ccc; border-radius: 7px; background: #fff; color: #444; font-size: 12px; cursor: pointer;
     }
+    #tppExport { right: 66px; }
+    #tppImport { right: 14px; }
     .tpp-save:hover { background: #f3f3f3; }
     .tpp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 12px; align-items: start; }
     .tpp-card { position: relative; cursor: pointer; user-select: none; }
@@ -1736,6 +1738,8 @@ window.addEventListener('DOMContentLoaded', function () {
                 <input type="text" id="tppSearch" placeholder="搜索模板名 / 比例" autocomplete="off" spellcheck="false">
             </div>
             <button class="tpp-save" id="tppSave" title="把画布上每块有文字 / 贴纸的框各存成一个模板（Ctrl+S）">＋ 存为模板</button>
+            <button class="tpp-save tpp-io" id="tppExport" title="把模板导出成一个 .cmtpl 文件发给别人（模板里的图片、缩略图一起带走）">导出</button>
+            <button class="tpp-save tpp-io" id="tppImport" title="导入别人给的 .cmtpl 模板（图片会一起进来；本机没有的字体会提示）">导入</button>
         </div>
         <div class="sp-body">
             <div class="sp-cats" id="tppCats"></div>
@@ -6411,6 +6415,58 @@ window.addEventListener('DOMContentLoaded', function () {
                 if (!FONTS.loaded || !fontAvailable(f)) out.push({ title: f, fallback: fallbackFont(f) });
             });
             return out;
+        }
+
+        // 2026-11-02 导入模板后：把模板里用到的字体跟本机字体表对一遍，缺的列出来提示（用户「如果没有的字体会提示用户」）
+        //   模板记录里的 nodes 是 Konva toJSON 的结果 → 文字可能是「文字」也可能是「文字组」里的子节点，所以递归找 Text。
+        function tplFontFamiliesOf(rec) {
+            const out = [];
+            const seen = {};
+            const walk = (n) => {
+                if (!n || typeof n !== 'object') return;
+                const a = n.attrs || {};
+                const fam = String(a.fontFamily || '').trim();
+                if (fam && seen[fam] !== 1) { seen[fam] = 1; out.push(fam); }
+                if (Array.isArray(n.children)) n.children.forEach(walk);
+            };
+            ((rec && rec.nodes) || []).forEach(walk);
+            return out;
+        }
+        async function checkImportedFonts(recs) {
+            if (!FONTS.loaded) { try { await loadFonts(); } catch (e) {} }
+            const miss = [];
+            const seen = {};
+            (recs || []).forEach((rec) => {
+                tplFontFamiliesOf(rec).forEach((f) => {
+                    if (seen[f] || (FONTS.loaded && fontAvailable(f))) return;
+                    seen[f] = 1;
+                    miss.push({ title: f, fallback: fallbackFont(f) });
+                });
+            });
+            return miss;
+        }
+        function showImportedFontWarn(miss) {
+            const mask = document.getElementById('fontWarnMask');
+            const body = document.getElementById('fontWarnBody');
+            if (!mask || !body || !miss || !miss.length) return false;
+            body.innerHTML = '';
+            const head = document.createElement('div');
+            head.textContent = '导入的模板里用了 ' + miss.length + ' 个本机没装的字体：';
+            body.appendChild(head);
+            miss.forEach((m) => {
+                const line = document.createElement('div');
+                line.className = 'fw-item';
+                line.innerHTML = '原字体 <span class="fw-src"></span><span class="fw-arrow">→</span>已替代为 <span class="fw-dst"></span>';
+                line.querySelector('.fw-src').textContent = m.title;
+                line.querySelector('.fw-dst').textContent = m.fallback;
+                body.appendChild(line);
+            });
+            const tip = document.createElement('div');
+            tip.className = 'fw-tip';
+            tip.textContent = '模板照常能用，版式不受影响；这些字会按同类字体替代。想换：在画布上点中这段文字 → 右栏「字体」下拉挑一个本机字体，或「＋ 导入字体」把原字体装进来再应用一次。';
+            body.appendChild(tip);
+            mask.classList.add('active');
+            return true;
         }
 
         function closeFontWarn() {
@@ -14383,6 +14439,46 @@ window.addEventListener('DOMContentLoaded', function () {
                 else tppMsg(r && r.reason === 'noframe' ? '画布上还没有框：先在左栏「平台」勾上要发布的平台，在框里放好文字 / 贴纸再存。'
                     : r && r.reason === 'empty' ? '框里还没有文字或贴纸，没存模板（照片不进模板）。' : '');
                 tppRender();
+            };
+            // 2026-11-02 模板给别人用：导出（图片一起带走）/ 导入（图片落在本机、应用时不上画布；缺字体提示）
+            const ex = document.getElementById('tppExport');
+            if (ex) ex.onclick = async () => {
+                const api = window.coverApp && window.coverApp.myTemplates;
+                if (!api || typeof api.exportPack !== 'function') { tppMsg('桌面版才能导出模板'); return; }
+                const r = await api.exportPack([]);                       // 空数组 = 导出全部模板
+                if (!r || r.ok === false) {
+                    if (!(r && r.canceled)) tppMsg('导出失败：' + ((r && r.reason) || '未知原因'));
+                    return;
+                }
+                let m = '已导出 ' + r.templates + ' 个模板' + (r.images ? '（含图片 ' + r.images + ' 张）' : '') + ' → ' + r.file;
+                if (r.missing && r.missing.length) m += '；有 ' + r.missing.length + ' 个文件没找到，已跳过：' + r.missing.slice(0, 3).join('、');
+                tppMsg(m);
+                hintStatus(m);
+            };
+            const im = document.getElementById('tppImport');
+            if (im) im.onclick = async () => {
+                const api = window.coverApp && window.coverApp.myTemplates;
+                if (!api || typeof api.importPack !== 'function') { tppMsg('桌面版才能导入模板'); return; }
+                const r = await api.importPack();
+                if (!r || r.ok === false) {
+                    if (!(r && r.canceled)) tppMsg('导入失败：' + ((r && r.reason) || '未知原因'));
+                    return;
+                }
+                MYTPL.items = r.items || (await api.list()) || [];
+                // 2026-11-02：包里带了字体 → 重新读一遍字体表（导入的字体一并注册 FontFace），这样模板里的字立刻就能画对
+                if (r.fonts && r.fonts.added && r.fonts.added.length) { try { await loadFonts(true); } catch (e) {} }
+                renderMyTemplates();
+                tppRender();
+                const addedNames = r.added || [];
+                const recs = MYTPL.items.filter((x) => addedNames.indexOf(x.name) >= 0);
+                const miss = await checkImportedFonts(recs);
+                let m = '已导入 ' + addedNames.length + ' 个模板：' + addedNames.join('、');
+                if (r.fonts && r.fonts.added && r.fonts.added.length) m += '；随包装了 ' + r.fonts.added.length + ' 个字体';
+                if (r.skipped && r.skipped.length) m += '（跳过 ' + r.skipped.length + ' 个）';
+                if (miss.length) m += '；本机还缺 ' + miss.length + ' 个字体，已用同类字体替代';
+                tppMsg(m);
+                hintStatus('已导入 ' + addedNames.length + ' 个模板·点缩略图应用到同比例的框');
+                if (miss.length) showImportedFontWarn(miss);
             };
             document.addEventListener('mousedown', (e) => {
                 if (pop.hidden) return;
