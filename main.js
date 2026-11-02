@@ -13912,6 +13912,79 @@ function createWindow() {
                     console.log('[cover-maker] selftest copyhex 判据:', JSON.stringify({ '①RGB页色块右键=剪贴板色值(底部提示条不显示)': h1, '②提色板色块右键=剪贴板色值': h2, '③右键不改文字色': h3, '④板块外右键不碰剪贴板': h4, ok: copyHexOk }));
                 }
 
+                // 判据场景：--gradangle 渐变角度行（2026-11-02 用户「每一个图层中有渐变的后面再加一个和阴影一样的角度盘」）
+                //   ① 四项渐变后面都有「角度」行（文字 / 贴纸 / 描边 / 阴影），都有圆盘 + 度数框
+                //   ② __cmGrad.setAngle('tint', 0 / 45) → 渐变对象的 angle 真的变
+                //   ③ 像素：angle 90 = 上红下蓝；改成 0 = 左红右蓝（真的转了，不只是改了数字）
+                //   ④ 没有渐变（两头同色）→ 圆盘压暗、度数回默认 90
+                let gradAngleOk = true;
+                if (process.argv.includes('--gradangle')) {
+                    const A = (name, args) => jsx('window.__cmAgent.call(' + JSON.stringify(name) + ', ' + JSON.stringify(args || {}) + ')');
+                    await jsx(`(function () { layerNodes().forEach(function (n) { n.destroy(); }); window.__cmHistoryReset(); return true; })()`);
+                    await A('set_platforms', { platforms: ['xiaohongshu'] });
+                    const sh = await A('add_shape', { shape: 'rect', frame: 1, width: 1.45, height: 1.45, fill: '#FF0000', shadow: false });
+                    const sid = sh && sh.element && sh.element.id;
+                    const O = {};
+                    const nodeJs = JSON.stringify(String(sid || ''));
+                    await jsx(`(function () { var n = layerNodes().filter(function (x) { return x.getAttr('aid') === ` + nodeJs + `; })[0];
+                        n.setAttr('tintGradient', { colors: ['#FF0000', '#0000FF'], angle: 90, base: '#FF0000' });
+                        if (tr) { tr.nodes([]); }
+                        window.__cmGrad.angleRows(n); mainLayer.batchDraw(); return true; })()`);
+                    O.控件 = await jsx(`(function () { var o = {};
+                        ['fill','tint','stroke','shadow'].forEach(function (k) {
+                            var row = window.__cmGrad.angleRow(k);
+                            var d = row && row.querySelector('.angle-dial'), i = row && row.querySelector('.tp-grad-ang');
+                            o[k] = row ? { 有盘: !!d, 有框: !!i, 值: i && i.value, 压暗: !!(d && d.classList.contains('dim')) } : null;
+                        });
+                        return o; })()`);
+                    const sample = (url) => jsx(`(async function () { var im = new Image(); im.src = ${JSON.stringify('')} + ${JSON.stringify(url || '')};
+                        await im.decode();
+                        var c = document.createElement('canvas'); c.width = im.width; c.height = im.height;
+                        var x = c.getContext('2d'); x.drawImage(im, 0, 0);
+                        function band(kind, f) { var d;
+                            if (kind === 'row') d = x.getImageData(0, Math.max(0, Math.min(im.height - 1, Math.round(im.height * f))), im.width, 1).data;
+                            else d = x.getImageData(Math.max(0, Math.min(im.width - 1, Math.round(im.width * f))), 0, 1, im.height).data;
+                            var r = 0, b = 0, n = 0;
+                            for (var i = 0; i < d.length; i += 4) { if (d[i + 3] < 8) continue; r += d[i]; b += d[i + 2]; n++; }
+                            return n ? { r: Math.round(r / n), b: Math.round(b / n) } : null; }
+                        return { top: band('row', 0.12), bottom: band('row', 0.88), left: band('col', 0.12), right: band('col', 0.88) }; })()`);
+                    const s90 = await A('screenshot', { frame: 1 });
+                    O.竖 = await sample(s90 && s90.dataURL);
+                    await jsx(`window.__cmGrad.setAngle('tint', 0); true`);
+                    O.角0 = await jsx(`(function () { var n = layerNodes().filter(function (x) { return x.getAttr('aid') === ` + nodeJs + `; })[0];
+                        var g = window.__cmGrad.of(n, 'tint'); return g ? Math.round(g.angle) : null; })()`);
+                    const s0 = await A('screenshot', { frame: 1 });
+                    O.横 = await sample(s0 && s0.dataURL);
+                    await jsx(`window.__cmGrad.setAngle('tint', 45); true`);
+                    O.角45 = await jsx(`(function () { var n = layerNodes().filter(function (x) { return x.getAttr('aid') === ` + nodeJs + `; })[0];
+                        var g = window.__cmGrad.of(n, 'tint'); return g ? Math.round(g.angle) : null; })()`);
+                    O.回显45 = await jsx(`(function () { var n = layerNodes().filter(function (x) { return x.getAttr('aid') === ` + nodeJs + `; })[0];
+                        window.__cmGrad.angleRows(n); var row = window.__cmGrad.angleRow('tint');
+                        var i = row && row.querySelector('.tp-grad-ang'), d = row && row.querySelector('.angle-dial');
+                        return { 值: i && i.value, 压暗: !!(d && d.classList.contains('dim')) }; })()`);
+                    await jsx(`(function () { var n = layerNodes().filter(function (x) { return x.getAttr('aid') === ` + nodeJs + `; })[0];
+                        n.setAttr('tintGradient', null); window.__cmGrad.angleRows(n); mainLayer.batchDraw(); return true; })()`);
+                    O.无渐变 = await jsx(`(function () { var row = window.__cmGrad.angleRow('tint');
+                        var i = row && row.querySelector('.tp-grad-ang'), d = row && row.querySelector('.angle-dial');
+                        return { 值: i && i.value, 压暗: !!(d && d.classList.contains('dim')) }; })()`);
+                    await jsx(`(function () { layerNodes().forEach(function (n) { n.destroy(); });
+                        activePlatforms.length = 0; mainPlatform = null; syncPlatformMenu(); drawPlatformFrame();
+                        tr.nodes([]); selectedNode = null; mainLayer.draw(); refreshLayers(); window.__cmHistoryReset(); return true; })()`);
+                    const okG = [];
+                    const ctl = O.控件 || {};
+                    if (!(ctl.fill && ctl.fill.有盘 && ctl.fill.有框 && ctl.tint && ctl.tint.有盘 && ctl.tint.有框
+                          && ctl.stroke && ctl.stroke.有盘 && ctl.stroke.有框 && ctl.shadow && ctl.shadow.有盘 && ctl.shadow.有框)) okG.push('四行控件');
+                    if (!(ctl.tint && ctl.tint.值 === '90' && !ctl.tint.压暗)) okG.push('有渐变时圆盘不压暗/回显 90');
+                    if (!(O.角0 === 0 && O.角45 === 45)) okG.push('改角度接口');
+                    if (!(O.竖 && O.竖.top && O.竖.bottom && O.竖.top.r > O.竖.top.b + 40 && O.竖.bottom.b > O.竖.bottom.r + 40)) okG.push('90° 上红下蓝');
+                    if (!(O.横 && O.横.left && O.横.right && O.横.left.r > O.横.left.b + 40 && O.横.right.b > O.横.right.r + 40)) okG.push('0° 左红右蓝');
+                    if (!(O.回显45 && O.回显45.值 === '45' && !O.回显45.压暗)) okG.push('度数框回显 45');
+                    if (!(O.无渐变 && O.无渐变.压暗 && O.无渐变.值 === '90')) okG.push('没渐变时压暗');
+                    gradAngleOk = okG.length === 0;
+                    console.log('[cover-maker] selftest gradangle 明细:', JSON.stringify(O));
+                    console.log('[cover-maker] selftest gradangle 判据:', JSON.stringify({ 没过的步: okG, 渐变角度: gradAngleOk }));
+                }
+
                 // 判据场景：--agentskew（2026-11-02 用户「用 agent 控制说文字的斜切没有接口」）
                 //   ① add_text 带 skew_x → Konva skewX（度）真写进去、get_canvas 回报 skew_x
                 //   ② update_element 改 skew_x / skew_y → 两个都生效、中心点（占框比例）不漂
@@ -19273,7 +19346,7 @@ function createWindow() {
                     && frameWhiteOk
                     && r.stickers === stickerExpect
                     && libOk && libPasteOk && libRemoveOk && frameDragOk && stickerPasteOk && multiDragOk && skipOk && skipUiOk
-                    && textPasteOk && textEditOk && sidebarOk && auditOk && undoRedoOk && layerOrderOk && platCheckOk && layersOk                    && imgDropOk && frameStackOk && fillFrameOk && ffLateOk && imgDrag2Ok && frameMoveOk && frameScaleOk && exportOk && exportCancelOk && sharpOk && tplOk && fontUiOk && fontDockOk && ctPanelOk && dockLibsOk && fontWarnOk && whiteShadowOk && imgClipOk && decorClipOk && frameNosOk && layerMultiOk && textPathOk && imgOutOk && moveFrameOk && moveRightOk && shrinkFillOk && frameChildrenOk && frameKeepOk && copyPasteOk && tplRenameOk && zoomShiftOk && zoomShiftPosOk && platShareOk && qProbeOk && keyDelOk && strokeModeOk && macFontsOk && canvasZoomOk && zoomProbeOk && zoomFrameOk && landFillOk && marqueeOk && snapGuideOk && save2libOk && roundtripOk && save2libUiOk && fileMenuOk && fontMenuOk && fontPlanOk && fontImportOk && imgHitOk && fontFallbackOk && textRenderOk && winLifeOk && subjectOk && skewOk && colorsOk && layerEyeOk && layerRenameOk && editScaleOk && splitSwitchOk && cellPanOk && xhs11Ok && clickFrameOk && biliNumOk && creamOk && specialScaleOk && ctxSkewOk && colorSelOk && pasteFitOk && imgSkewOk && defTabOk && splitOk && colorPinsOk && layerCopyOk && subjShadowOk && imageFxOk && copyHexOk && extractGreenOk && board18Ok && layerMultiDragOk && widenOnlyOk && defaultFontOk && textFxOk && eraserOk && photoRotateOk && eyedropOk && toggleFollowOk && updateCheckOk && shapesOk && mcpOk && agentTxOk && agentLayoutOk && agentCreateOk && agentRegOk && agentSubjectOk && agentFontOk && agentOpacityOk && agentLayersOk && textGradOk && textStyleMemoryOk && frameShapeOk && gzhOk && customRatioOk && alignOk && weightOk && guidesOk && shiftDragOk && stickerGradOk && shapeFxOk && cornerOk && bubbleTailOk && tplSubjectOk && sysPasteOk && tplIoOk && agentSkewOk;
+                    && textPasteOk && textEditOk && sidebarOk && auditOk && undoRedoOk && layerOrderOk && platCheckOk && layersOk                    && imgDropOk && frameStackOk && fillFrameOk && ffLateOk && imgDrag2Ok && frameMoveOk && frameScaleOk && exportOk && exportCancelOk && sharpOk && tplOk && fontUiOk && fontDockOk && ctPanelOk && dockLibsOk && fontWarnOk && whiteShadowOk && imgClipOk && decorClipOk && frameNosOk && layerMultiOk && textPathOk && imgOutOk && moveFrameOk && moveRightOk && shrinkFillOk && frameChildrenOk && frameKeepOk && copyPasteOk && tplRenameOk && zoomShiftOk && zoomShiftPosOk && platShareOk && qProbeOk && keyDelOk && strokeModeOk && macFontsOk && canvasZoomOk && zoomProbeOk && zoomFrameOk && landFillOk && marqueeOk && snapGuideOk && save2libOk && roundtripOk && save2libUiOk && fileMenuOk && fontMenuOk && fontPlanOk && fontImportOk && imgHitOk && fontFallbackOk && textRenderOk && winLifeOk && subjectOk && skewOk && colorsOk && layerEyeOk && layerRenameOk && editScaleOk && splitSwitchOk && cellPanOk && xhs11Ok && clickFrameOk && biliNumOk && creamOk && specialScaleOk && ctxSkewOk && colorSelOk && pasteFitOk && imgSkewOk && defTabOk && splitOk && colorPinsOk && layerCopyOk && subjShadowOk && imageFxOk && copyHexOk && extractGreenOk && board18Ok && layerMultiDragOk && widenOnlyOk && defaultFontOk && textFxOk && eraserOk && photoRotateOk && eyedropOk && toggleFollowOk && updateCheckOk && shapesOk && mcpOk && agentTxOk && agentLayoutOk && agentCreateOk && agentRegOk && agentSubjectOk && agentFontOk && agentOpacityOk && agentLayersOk && textGradOk && textStyleMemoryOk && frameShapeOk && gzhOk && customRatioOk && alignOk && weightOk && guidesOk && shiftDragOk && stickerGradOk && shapeFxOk && cornerOk && bubbleTailOk && tplSubjectOk && sysPasteOk && tplIoOk && agentSkewOk && gradAngleOk;
                 console.log('[cover-maker] selftest 分项:', JSON.stringify({
                     基础: !!(r.konva && r.stage && r.bridge), 库面板: popupLayerOk, 底部格子: emptyBoxOk, 底边对齐: bottomOk, 启动开着的库: dockAtStart.currentLib, 框: (onlyArg || framedrag || multidrag || plArg ? r.frames > 0 : r.frames === 0), 框样式: frameWhiteOk,
                     贴纸数: r.stickers === stickerExpect, 素材库: libOk, 素材贴图: libPasteOk, 素材删除: libRemoveOk,
@@ -19281,7 +19354,7 @@ function createWindow() {
                     复制粘贴: copyPasteOk,
                     文字贴入: textPasteOk, 整组编辑: textEditOk, 左栏: sidebarOk, 体检: auditOk, 撤销重做: undoRedoOk,
                     层序: layerOrderOk, 图层面板: layersOk, 图片进画布: imgDropOk, 参考框: frameStackOk,
-                    导出: exportOk, 导出取消: exportCancelOk, 清晰度: sharpOk, 模板: tplOk, 字体库改名: tplRenameOk, 缩放后照片不漂: zoomShiftOk, '页面/窗口变了框位置不变': zoomShiftPosOk, '同比例平台=同一块框': platShareOk, '导出不压缩画质(按目标像素重渲染)': qProbeOk, 'Delete/回车快捷删除': keyDelOk, '外描边/内描边': strokeModeOk, 'Mac 字体表读族名': macFontsOk, 字体: fontUiOk, 字体库格子: fontDockOk, '文字/阴影/描边分页': ctPanelOk, 三库切格子: dockLibsOk, 字体缺失提示: fontWarnOk, 白框立体感: whiteShadowOk, 图片只在框里显示: imgClipOk, '文字/贴纸只在框里显示': decorClipOk, '图层后框编号': frameNosOk, '图层多选/复制图层/拖到框编号复制': layerMultiOk, 文字路径: textPathOk, 图片能移到画布外: imgOutOk, '照片拖到另一块框也显示': moveFrameOk, '缩小后框能拖到画布最右边': moveRightOk, '缩框后照片仍盖满整块框线': shrinkFillOk, '贴纸/文字也是框的子对象': frameChildrenOk, '改窗口后框排版守恒': frameKeepOk, 框选: marqueeOk, 中心准线: snapGuideOk, 框选存库: save2libOk, 往返一致: roundtripOk, 框选存库入口: save2libUiOk,                    画布随缩放等比: canvasZoomOk, '缩小/放大页面图不消失': zoomProbeOk, 横版拉满跟随: landFillOk, 图片拖进框自动铺满: fillFrameOk, 先拖图后开平台: ffLateOk, 框里拖图: imgDrag2Ok, '框+图整组拖': frameMoveOk, '相框等比缩放': frameScaleOk, 字体替代分平台: fontFallbackOk, 文字描边阴影尺度: textRenderOk, 窗口销毁安全: winLifeOk, 提取主体: subjectOk, 斜切: skewOk, 颜色板块: colorsOk, 图层小眼睛: layerEyeOk, 图层改名: layerRenameOk, '放大文字双击不变小': editScaleOk, '切分块照片不丢': splitSwitchOk, '格子里挪图不跑格': cellPanOk, '小红书1:1框': xhs11Ok, '点框=切数字+黄圈': clickFrameOk, '框编号同方向左边在前': biliNumOk, 奶油色主题: creamOk, '斜切后普通拖不错位': specialScaleOk, 右键斜切: ctxSkewOk, '选中文字点颜色跟着变': colorSelOk, '复制到别的框不出框': pasteFitOk, 图片斜切: imgSkewOk, 图层默认亮1: defTabOk, 分块: splitOk, 常驻颜色: colorPinsOk, '图层多选后复制粘贴': layerCopyOk, 主体阴影: subjShadowOk, '图片/贴纸描边阴影': imageFxOk, '右键复制色值': copyHexOk, '渐变小块色提得出': extractGreenOk, '提色板三排18格': board18Ok, '图层多选后画布上一起拖': layerMultiDragOk, '窗口只变宽图跟框': widenOnlyOk, 默认字体按使用次数: defaultFontOk, '字透明度/阴影透明度/阴影大小': textFxOk, 橡皮擦: eraserOk, 照片角外侧旋转: photoRotateOk, 吸管: eyedropOk, '勾平台框挪了框里东西跟着': toggleFollowOk, 检查更新: updateCheckOk, 形状: shapesOk, 'AI 调用(MCP)': mcpOk, 画布事务: agentTxOk, 自动排版落地: agentLayoutOk, 一键做封面: agentCreateOk, 自动接入Agent: agentRegOk, 'AI 抠主体': agentSubjectOk, 'AI 字体缺失提示': agentFontOk, '透明度 + 笔刷': agentOpacityOk, '文字/描边/阴影渐变': textGradOk, '最近文字样式记忆': textStyleMemoryOk, '框里的形状跟着缩放': frameShapeOk, 公众号: gzhOk, 对齐: alignOk, 字体样式: weightOk, 参考线: guidesOk, 'Shift 锁方向': shiftDragOk, 贴纸渐变: stickerGradOk, 形状同文字: shapeFxOk, 圆角: cornerOk, 气泡尾巴: bubbleTailOk, '系统剪贴板粘文字(微信复制→画布)': sysPasteOk, '模板导出/导入(.cmtpl 带图片)': tplIoOk, 'AI 斜切接口': agentSkewOk, 模板带主体: tplSubjectOk, 帮助菜单: helpMenuOk, 字体菜单: fontMenuOk, '导入字体弹对话框(空清单不吞)': fontPlanOk, 导入字体: fontImportOk, '框外那截不可点(§0.99.21)': imgHitOk, 文件菜单: fileMenuOk
+                    导出: exportOk, 导出取消: exportCancelOk, 清晰度: sharpOk, 模板: tplOk, 字体库改名: tplRenameOk, 缩放后照片不漂: zoomShiftOk, '页面/窗口变了框位置不变': zoomShiftPosOk, '同比例平台=同一块框': platShareOk, '导出不压缩画质(按目标像素重渲染)': qProbeOk, 'Delete/回车快捷删除': keyDelOk, '外描边/内描边': strokeModeOk, 'Mac 字体表读族名': macFontsOk, 字体: fontUiOk, 字体库格子: fontDockOk, '文字/阴影/描边分页': ctPanelOk, 三库切格子: dockLibsOk, 字体缺失提示: fontWarnOk, 白框立体感: whiteShadowOk, 图片只在框里显示: imgClipOk, '文字/贴纸只在框里显示': decorClipOk, '图层后框编号': frameNosOk, '图层多选/复制图层/拖到框编号复制': layerMultiOk, 文字路径: textPathOk, 图片能移到画布外: imgOutOk, '照片拖到另一块框也显示': moveFrameOk, '缩小后框能拖到画布最右边': moveRightOk, '缩框后照片仍盖满整块框线': shrinkFillOk, '贴纸/文字也是框的子对象': frameChildrenOk, '改窗口后框排版守恒': frameKeepOk, 框选: marqueeOk, 中心准线: snapGuideOk, 框选存库: save2libOk, 往返一致: roundtripOk, 框选存库入口: save2libUiOk,                    画布随缩放等比: canvasZoomOk, '缩小/放大页面图不消失': zoomProbeOk, 横版拉满跟随: landFillOk, 图片拖进框自动铺满: fillFrameOk, 先拖图后开平台: ffLateOk, 框里拖图: imgDrag2Ok, '框+图整组拖': frameMoveOk, '相框等比缩放': frameScaleOk, 字体替代分平台: fontFallbackOk, 文字描边阴影尺度: textRenderOk, 窗口销毁安全: winLifeOk, 提取主体: subjectOk, 斜切: skewOk, 颜色板块: colorsOk, 图层小眼睛: layerEyeOk, 图层改名: layerRenameOk, '放大文字双击不变小': editScaleOk, '切分块照片不丢': splitSwitchOk, '格子里挪图不跑格': cellPanOk, '小红书1:1框': xhs11Ok, '点框=切数字+黄圈': clickFrameOk, '框编号同方向左边在前': biliNumOk, 奶油色主题: creamOk, '斜切后普通拖不错位': specialScaleOk, 右键斜切: ctxSkewOk, '选中文字点颜色跟着变': colorSelOk, '复制到别的框不出框': pasteFitOk, 图片斜切: imgSkewOk, 图层默认亮1: defTabOk, 分块: splitOk, 常驻颜色: colorPinsOk, '图层多选后复制粘贴': layerCopyOk, 主体阴影: subjShadowOk, '图片/贴纸描边阴影': imageFxOk, '右键复制色值': copyHexOk, '渐变小块色提得出': extractGreenOk, '提色板三排18格': board18Ok, '图层多选后画布上一起拖': layerMultiDragOk, '窗口只变宽图跟框': widenOnlyOk, 默认字体按使用次数: defaultFontOk, '字透明度/阴影透明度/阴影大小': textFxOk, 橡皮擦: eraserOk, 照片角外侧旋转: photoRotateOk, 吸管: eyedropOk, '勾平台框挪了框里东西跟着': toggleFollowOk, 检查更新: updateCheckOk, 形状: shapesOk, 'AI 调用(MCP)': mcpOk, 画布事务: agentTxOk, 自动排版落地: agentLayoutOk, 一键做封面: agentCreateOk, 自动接入Agent: agentRegOk, 'AI 抠主体': agentSubjectOk, 'AI 字体缺失提示': agentFontOk, '透明度 + 笔刷': agentOpacityOk, '文字/描边/阴影渐变': textGradOk, '最近文字样式记忆': textStyleMemoryOk, '框里的形状跟着缩放': frameShapeOk, 公众号: gzhOk, 对齐: alignOk, 字体样式: weightOk, 参考线: guidesOk, 'Shift 锁方向': shiftDragOk, 贴纸渐变: stickerGradOk, 形状同文字: shapeFxOk, 圆角: cornerOk, 气泡尾巴: bubbleTailOk, '系统剪贴板粘文字(微信复制→画布)': sysPasteOk, '模板导出/导入(.cmtpl 带图片)': tplIoOk, 'AI 斜切接口': agentSkewOk, '渐变角度盘': gradAngleOk, 模板带主体: tplSubjectOk, 帮助菜单: helpMenuOk, 字体菜单: fontMenuOk, '导入字体弹对话框(空清单不吞)': fontPlanOk, 导入字体: fontImportOk, '框外那截不可点(§0.99.21)': imgHitOk, 文件菜单: fileMenuOk
                 }));
                 console.log('[cover-maker] selftest ' + (ok ? 'PASS' : 'FAIL'));
                 app.exit(ok ? 0 : 1);

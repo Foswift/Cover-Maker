@@ -1139,6 +1139,9 @@ window.addEventListener('DOMContentLoaded', function () {
        ③ 度数框用 `.tp-num`（56px），与距离框**同宽**。 */
     #tpShadowRow .prop-label, #tpShadowAngleRow .prop-label, #tpShadowOpRow .prop-label, #tpShadowSizeRow .prop-label { flex: 0 0 35px; white-space: nowrap; }
     #tpShadowAngleRow .angle-dial { margin-right: 8px; }
+    /* 2026-11-02 渐变角度行（文字 / 贴纸 / 描边 / 阴影各一行）：列宽与阴影角度行同一套 35px 标签 + 26px 圆盘 + 8px 右留 */
+    #textProps .tp-gradang-row .prop-label { flex: 0 0 35px; white-space: nowrap; }
+    #textProps .tp-gradang-row .angle-dial { margin-right: 8px; }
     .tp-align { flex: 1; padding: 3px 0; font-size: 12px; }
     .tp-note { font-size: 11px; color: #999; margin-top: 8px; line-height: 1.5; }
 
@@ -2044,12 +2047,26 @@ window.addEventListener('DOMContentLoaded', function () {
                         <span class="tp-grad-arrow">→</span>
                         <button type="button" class="tp-grad-sw" data-slot="1" title="终点色（下）：点它再点色盘，或把颜色框里的色块拖进来；和起点不一样就是渐变"></button>
                     </div>
+                    <!-- 2026-11-02 用户「在每一个图层中有渐变的后面再加一个和阴影一样的角度盘，用来调整渐变颜色的角度」：
+                         跟阴影角度行同一套圆盘 + 度数框；没有渐变（两头同色）时圆盘压暗。 -->
+                    <div class="prop-row tp-gradang-row" data-ct="fill" data-gk="fill">
+                        <span class="prop-label">角度</span>
+                        <div class="angle-dial dim" title="渐变角度：拖圆盘上的小圆点，或直接在右边输度数。0° = 从左到右，90° = 从上到下（默认），180° = 从右到左"><div class="dial-handle"></div></div>
+                        <input type="number" min="0" max="359" step="1" value="90" class="tp-input tp-num tp-grad-ang" title="渐变角度（°）：0 = 左→右，90 = 上→下，180 = 右→左（顺时针一圈 360°）">
+                    </div>
                     <!-- 2026-10-24 用户「贴纸也要加上渐变」：颜色框选「贴纸」时出这一行（导入的图片贴纸；用法同文字渐变） -->
                     <div class="prop-row tp-grad-row" data-ct="shape" data-gk="tint">
                         <span class="prop-label">渐变</span>
                         <button type="button" class="tp-grad-sw" data-slot="0" title="起点色（上）= 贴纸现在的颜色：点它再点色盘，或把颜色框里的色块拖进来"></button>
                         <span class="tp-grad-arrow">→</span>
                         <button type="button" class="tp-grad-sw" data-slot="1" title="终点色（下）：点它再点色盘，或把颜色框里的色块拖进来；和起点不一样就是渐变"></button>
+                    </div>
+                    <!-- 2026-11-02 用户「在每一个图层中有渐变的后面再加一个和阴影一样的角度盘，用来调整渐变颜色的角度」：
+                         跟阴影角度行同一套圆盘 + 度数框；没有渐变（两头同色）时圆盘压暗。 -->
+                    <div class="prop-row tp-gradang-row" data-ct="shape" data-gk="tint">
+                        <span class="prop-label">角度</span>
+                        <div class="angle-dial dim" title="渐变角度：拖圆盘上的小圆点，或直接在右边输度数。0° = 从左到右，90° = 从上到下（默认），180° = 从右到左"><div class="dial-handle"></div></div>
+                        <input type="number" min="0" max="359" step="1" value="90" class="tp-input tp-num tp-grad-ang" title="渐变角度（°）：0 = 左→右，90 = 上→下，180 = 右→左（顺时针一圈 360°）">
                     </div>
                     <div class="prop-row" data-ct="stroke">
                         <span class="prop-label" id="tpStrokeLabel">粗细</span><input id="tpStroke" type="color" class="tp-color" style="display:none"><!-- 2026-10-17：描边色改走上面的颜色框（选「描边」），这个色块只当存放处 -->
@@ -2067,6 +2084,13 @@ window.addEventListener('DOMContentLoaded', function () {
                         <button type="button" class="tp-grad-sw" data-slot="0" title="起点色（上）= 这一项现在的颜色：点它再点色盘，或把颜色框里的色块拖进来"></button>
                         <span class="tp-grad-arrow">→</span>
                         <button type="button" class="tp-grad-sw" data-slot="1" title="终点色（下）：点它再点色盘，或把颜色框里的色块拖进来；和起点不一样就是渐变"></button>
+                    </div>
+                    <!-- 2026-11-02 用户「在每一个图层中有渐变的后面再加一个和阴影一样的角度盘，用来调整渐变颜色的角度」：
+                         跟阴影角度行同一套圆盘 + 度数框；没有渐变（两头同色）时圆盘压暗。 -->
+                    <div class="prop-row tp-gradang-row" data-ct="stroke" data-gk="stroke">
+                        <span class="prop-label">角度</span>
+                        <div class="angle-dial dim" title="渐变角度：拖圆盘上的小圆点，或直接在右边输度数。0° = 从左到右，90° = 从上到下（默认），180° = 从右到左"><div class="dial-handle"></div></div>
+                        <input type="number" min="0" max="359" step="1" value="90" class="tp-input tp-num tp-grad-ang" title="渐变角度（°）：0 = 左→右，90 = 上→下，180 = 右→左（顺时针一圈 360°）">
                     </div>
                     <div class="prop-row" id="tpShadowRow" data-ct="shadow">
                         <span class="prop-label">距离</span><input id="tpShadow" type="color" class="tp-color" style="display:none"><!-- 2026-10-17：阴影色改走上面的颜色框（选「阴影」） -->
@@ -2102,6 +2126,13 @@ window.addEventListener('DOMContentLoaded', function () {
                         <button type="button" class="tp-grad-sw" data-slot="0" title="起点色（上）= 这一项现在的颜色：点它再点色盘，或把颜色框里的色块拖进来"></button>
                         <span class="tp-grad-arrow">→</span>
                         <button type="button" class="tp-grad-sw" data-slot="1" title="终点色（下）：点它再点色盘，或把颜色框里的色块拖进来；和起点不一样就是渐变"></button>
+                    </div>
+                    <!-- 2026-11-02 用户「在每一个图层中有渐变的后面再加一个和阴影一样的角度盘，用来调整渐变颜色的角度」：
+                         跟阴影角度行同一套圆盘 + 度数框；没有渐变（两头同色）时圆盘压暗。 -->
+                    <div class="prop-row tp-gradang-row" data-ct="shadow" data-gk="shadow">
+                        <span class="prop-label">角度</span>
+                        <div class="angle-dial dim" title="渐变角度：拖圆盘上的小圆点，或直接在右边输度数。0° = 从左到右，90° = 从上到下（默认），180° = 从右到左"><div class="dial-handle"></div></div>
+                        <input type="number" min="0" max="359" step="1" value="90" class="tp-input tp-num tp-grad-ang" title="渐变角度（°）：0 = 左→右，90 = 上→下，180 = 右→左（顺时针一圈 360°）">
                     </div>
                     <!-- 「存入字体库」按钮 2026-10-17 按用户要求去掉（字体库的卡片格子已随画布下方的框一起去掉，存进去也看不到）；
                          saveSelectionToFontLibrary() 和命令 save-to-fontlib 还在，只是界面上没有入口 -->
@@ -12445,6 +12476,7 @@ window.addEventListener('DOMContentLoaded', function () {
                     b.classList.toggle('active', GR.slot[k] === i);
                 });
             });
+            gradSyncAngleRows(n);            // 2026-11-02：四项渐变的「角度」行跟着回显（没渐变 → 压暗）
         }
         // 描边 / 阴影还没开、要设终点色 → 先按「点颜色」那条路用现在的颜色顺带打开
         function gradEnsureOn(k, ts) {
@@ -12545,7 +12577,86 @@ window.addEventListener('DOMContentLoaded', function () {
                 });
             });
         })();
-        window.__cmGrad = { setOn: gradSetOn, slot: GR.slot, sync: gradSyncRows, of: visualGradOf };   // 自检用
+
+        // ==================== 2026-11-02 渐变角度（用户「每一个图层中有渐变的后面再加一个和阴影一样的角度盘」）====================
+        //   四项渐变（文字 fill / 贴纸 tint / 描边 stroke / 阴影 shadow）后面各跟一行「角度」：圆盘 + 度数框，
+        //   视觉与手感跟阴影角度行同一套；角度就写在该项渐变对象的 angle（0° = 左→右，90° = 上→下，默认 90）。
+        //   没有渐变（两头同色 → visualGradOf 返 null）时圆盘压暗：转了没效果，跟阴影距离 0 的提示口径一致。
+        function gradAngRow(k) { return document.querySelector('#textProps .tp-gradang-row[data-gk="' + k + '"]'); }
+        function gradAngPaint(k, deg) {
+            const row = gradAngRow(k); if (!row) return;
+            const dial = row.querySelector('.angle-dial'), handle = row.querySelector('.dial-handle');
+            if (!dial || !handle) return;
+            const R = Math.max(3, dial.clientWidth / 2 - handle.clientWidth / 2 - 1);
+            const rad = (deg - 90) * (Math.PI / 180);
+            handle.style.transform = 'translate(calc(-50% + ' + (Math.cos(rad) * R).toFixed(2) + 'px), calc(-50% + ' + (Math.sin(rad) * R).toFixed(2) + 'px))';
+        }
+        // 改渐变角度（当前选中的那一项渐变）。mergeKey 相同 → 连续拖动并进同一步撤销
+        function gradSetAngle(k, deg, mergeKey) {
+            const ts = gradTargets();
+            let d = Math.round(Number(deg) || 0) % 360; if (d < 0) d += 360;
+            let changed = false;
+            ts.forEach((n) => {
+                const g = visualGradOf(n, k); if (!g) return;
+                const cur = ((Math.round(Number(g.angle) || 0) % 360) + 360) % 360;
+                if (cur === d) return;
+                n.setAttr(gradAttr(n, k), Object.assign({}, g, { angle: d }));
+                if (k === 'tint') n._stickerTintCache = null;
+                changed = true;
+            });
+            if (changed) {
+                mainLayer.batchDraw();
+                pushHistory(CT_NAMES[k] + '渐变角度', mergeKey || ('gradang:' + k));
+                if (ts[0] && !isImageFxNode(ts[0]) && !isShapeNode(ts[0])) rememberRecentTextStyle(ts[0]);
+                gradSyncAngleRows(ts[0]);
+            }
+            return changed;
+        }
+        // 回显：四行圆盘位置 + 度数框 + 压暗状态（没有渐变的那几行压暗、度数显示默认 90）
+        function gradSyncAngleRows(n) {
+            ['fill', 'tint', 'stroke', 'shadow'].forEach((k) => {
+                const row = gradAngRow(k); if (!row) return;
+                const g = n ? visualGradOf(n, k) : null;
+                const deg = g ? (((Math.round(Number(g.angle) || 0)) % 360) + 360) % 360 : 90;
+                const inp = row.querySelector('.tp-grad-ang');
+                if (inp && document.activeElement !== inp) inp.value = String(deg);
+                const dial = row.querySelector('.angle-dial');
+                if (dial) dial.classList.toggle('dim', !g);
+                gradAngPaint(k, deg);
+            });
+        }
+        (function bindGradAngleRows() {
+            ['fill', 'tint', 'stroke', 'shadow'].forEach((k) => {
+                const row = gradAngRow(k); if (!row) return;
+                const dial = row.querySelector('.angle-dial'), inp = row.querySelector('.tp-grad-ang');
+                const angleFrom = (e) => {
+                    if (!dial) return 90;
+                    const r = dial.getBoundingClientRect();
+                    let deg = Math.atan2(e.clientY - (r.top + r.height / 2), e.clientX - (r.left + r.width / 2)) * (180 / Math.PI) + 90;
+                    if (deg < 0) deg += 360;
+                    return deg % 360;
+                };
+                let dragging = false;
+                const apply = (deg) => {
+                    const d = Math.round(deg) % 360;
+                    if (inp) inp.value = String(d);
+                    gradAngPaint(k, d);
+                    gradSetAngle(k, d, 'gradang:' + k);        // 同一个合并键 → 一次拖完只算一步撤销
+                };
+                if (dial) {
+                    dial.addEventListener('mousedown', (e) => { dragging = true; apply(angleFrom(e)); e.preventDefault(); });
+                    window.addEventListener('mousemove', (e) => { if (dragging) apply(angleFrom(e)); });
+                    window.addEventListener('mouseup', () => { dragging = false; });
+                }
+                if (inp) {
+                    inp.addEventListener('change', () => { apply(Number(inp.value) || 0); gradSyncAngleRows(gradFirst()); });
+                    inp.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); inp.blur(); } });
+                }
+            });
+            gradSyncAngleRows(gradFirst());
+        })();
+        window.__cmGrad = { setOn: gradSetOn, slot: GR.slot, sync: gradSyncRows, of: visualGradOf,
+                            setAngle: gradSetAngle, angleRows: gradSyncAngleRows, angleRow: gradAngRow };   // 自检用
         function ctApplyText(c) {
             const msg = gradApplyColor(c);
             if (msg) return msg;
