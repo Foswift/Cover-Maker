@@ -1139,6 +1139,18 @@ window.addEventListener('DOMContentLoaded', function () {
        ③ 度数框用 `.tp-num`（56px），与距离框**同宽**。 */
     #tpShadowRow .prop-label, #tpShadowAngleRow .prop-label, #tpShadowOpRow .prop-label, #tpShadowSizeRow .prop-label { flex: 0 0 35px; white-space: nowrap; }
     #tpShadowAngleRow .angle-dial { margin-right: 8px; }
+    /* 2026-11-02 用户「阴影框和阴影大小框要左对齐」：四行阴影参数统一成三列栅格
+       （标签 35px / 控件 1fr / 数值框 56px）→ 距离、角度、透明度、大小 的**数字框左缘完全一致**；
+       以前距离框紧跟标签、透明度和大小前面还有一条滑条，四行的数字框各在不同位置。 */
+    #tpShadowRow, #tpShadowAngleRow, #tpShadowOpRow, #tpShadowSizeRow {
+        display: grid; grid-template-columns: 35px minmax(0, 1fr) 56px; align-items: center;
+        column-gap: 6px; flex-wrap: nowrap;
+    }
+    #tpShadowRow .prop-label, #tpShadowAngleRow .prop-label, #tpShadowOpRow .prop-label, #tpShadowSizeRow .prop-label { grid-column: 1; flex: none; }
+    #tpShadowRow .tp-num, #tpShadowAngleRow .tp-num, #tpShadowOpRow .tp-num, #tpShadowSizeRow .tp-num { grid-column: 3; width: 56px; flex: none; justify-self: end; }
+    #tpShadowAngleRow .angle-dial { grid-column: 2; margin: 0; justify-self: start; }
+    #tpShadowOpRow .ip-range, #tpShadowSizeRow .ip-range { grid-column: 2; width: 100%; min-width: 0; }
+    #tpShadowRow .tp-color { display: none; }
     /* 2026-11-02 渐变角度（用户「把角度两个字去掉，只要角度盘和度数框，放在渐变块后面同一排」）：
        挤进渐变那一排 → 圆盘缩到 22px、度数框 44px（240px 侧栏放得下，实测 195px 内容宽） */
     #textProps .tp-grad-row { flex-wrap: nowrap; gap: 4px; }                 /* 一行放到底，别悄悄换行 */

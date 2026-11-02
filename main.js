@@ -13974,6 +13974,11 @@ function createWindow() {
                         });
                         window.__cmGrad.angleRows(window.__cmText);
                         return o; })()`);
+                    // 2026-11-02 用户「阴影框和阴影大小框要左对齐」：四行阴影参数（距离/角度/透明度/大小）的数字框左缘必须一致
+                    O.阴影对齐 = await jsx(`(function () { var keep = CT.t; CT.t = 'shadow'; ctRender();
+                        var L = function (id) { var el = document.getElementById(id); var r = el && el.getBoundingClientRect(); return r ? Math.round(r.left) : null; };
+                        var o = { 距离: L('tpShadowD'), 角度: L('tpShadowA'), 透明度: L('tpShadowO'), 大小: L('tpShadowS') };
+                        CT.t = keep; ctRender(); return o; })()`);
                     O.无渐变 = await jsx(`(function () { window.__cmText.setAttr('fillGradient', null);
                         window.__cmGrad.angleRows(window.__cmText);
                         var row = window.__cmGrad.angleRow('fill');
@@ -14016,6 +14021,8 @@ function createWindow() {
 
                     if (!(O.无渐变 && O.无渐变.压暗 && O.无渐变.值 === '90')) okG.push('没渐变时压暗');
                     if (!(i18nNew && Array.isArray(i18nNew.角度行) && i18nNew.角度行.length === 4 && Array.isArray(i18nNew.中文) && i18nNew.中文.length === 0)) okG.push('新增界面英文');
+                    const sy = O.阴影对齐 || {};
+                    if (!(sy.距离 != null && sy.距离 === sy.角度 && sy.距离 === sy.透明度 && sy.距离 === sy.大小)) okG.push('阴影四行数字框左对齐');
                     gradAngleOk = okG.length === 0;
                     console.log('[cover-maker] selftest gradangle 明细:', JSON.stringify({ ...O, 英文: i18nNew }));
                     console.log('[cover-maker] selftest gradangle 判据:', JSON.stringify({ 没过的步: okG, 渐变角度: gradAngleOk }));
