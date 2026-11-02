@@ -14061,6 +14061,9 @@ function createWindow() {
                         window.__cmTplIoSavedId = out.savedId;
                         out.saveReason = (sv && sv.reason) || '';
                         out.afterSave = MYTPL.items.length;
+                        // 单张导出（2026-11-02 用户「要能够单独导出，也可以批量导出」）：只给一个 id → 包里只有 1 个模板
+                        const exOne = await window.coverApp.myTemplates.exportPack(out.savedId ? [out.savedId] : []);
+                        out.exportOne = exOne ? { ok: !!exOne.ok, templates: exOne.templates || 0 } : null;
                         const ex = await window.coverApp.myTemplates.exportPack([]);
                         out.export = ex ? { ok: !!ex.ok, file: ex.file || '', templates: ex.templates || 0, images: ex.images || 0,
                                             missing: (ex.missing || []).length, reason: ex.reason || '' } : null;
@@ -14092,6 +14095,31 @@ function createWindow() {
                         try { await loadFonts(true); } catch (e) {}
                         const miss = await checkImportedFonts(recs);
                         return { recs: recs.length, miss: miss.map(function (m) { return m.title; }), imported: (FONTS.imported || []).length };
+                    })()`);
+                    // ⑦ 界面（放在还有卡片的时候量）：三个按钮并排不重叠；单张导出图标在；Ctrl 点卡片 = 勾选 → 头部变成「导出 1」
+                    const ui = await js(`(async function () {
+                        const out = {};
+                        const btn = document.getElementById('btnTplPop');
+                        if (btn) btn.click();
+                        let pop = document.getElementById('tplPop');
+                        if (pop && pop.hidden) { try { await openTplPop(btn); } catch (e) {} pop = document.getElementById('tplPop'); }
+                        await new Promise(function (r) { setTimeout(r, 350); });     // 弹层里渲染卡片是异步的（要等 myTemplates.list）
+                        out.popOpen = !!(pop && !pop.hidden);
+                        const rect = (id) => { const el = document.getElementById(id); if (!el) return null; const b = el.getBoundingClientRect(); return { l: Math.round(b.left), r: Math.round(b.right), w: Math.round(b.width) }; };
+                        out.save = rect('tppSave'); out.exp = rect('tppExport'); out.imp = rect('tppImport');
+                        out.buttonsOk = !!(out.save && out.exp && out.imp) && out.save.r <= out.exp.l && out.exp.r <= out.imp.l;
+                        const cards = document.querySelectorAll('#tppGrid .tpp-card');
+                        out.cards = cards.length;
+                        const card = cards[0] || null;
+                        out.hasExIcon = !!(card && card.querySelector('.tpp-ex'));
+                        out.exTitle = (card && card.querySelector('.tpp-ex') ? card.querySelector('.tpp-ex').title : '');
+                        if (card) card.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
+                        out.selCount = Object.keys(TPP.sel || {}).length;
+                        out.label = (document.getElementById('tppExport') || {}).textContent || '';
+                        out.selBadge = !!document.querySelector('#tppGrid .tpp-card.sel .tpp-sel-badge');
+                        TPP.sel = {}; tppSyncExportBtn(); tppRender();
+                        try { closeTplPop(); } catch (e) {}
+                        return out;
                     })()`);
                     // ③ 把包里的字体改成本机没有的 → 再导入一次 → 检查页面提示
                     let fakeDone = false;
@@ -14130,7 +14158,8 @@ function createWindow() {
                         return { left: MYTPL.items.length, deleted: ids.length };
                     })()`);
                     const p1 = res.frames >= 2 && res.saved === 1 && !!res.export && res.export.ok
-                        && res.export.templates === res.afterSave && res.export.images >= 1;
+                        && res.export.templates === res.afterSave && res.export.images >= 1
+                        && !!res.exportOne && res.exportOne.ok && res.exportOne.templates === 1;   // 单张导出只带 1 个
                     const p2 = !!t0 && String(t0.thumb || '') === '' && String(t0._thumbB64 || '').length > 500
                         && (t0.filePack || []).length >= 1 && String(((t0.filePack || [])[0] || {}).b64 || '').length > 100
                         && Array.isArray(pack.fonts) && pack.fonts.length >= 1 && String((pack.fonts[0] || {}).b64 || '').length > 1000
@@ -14148,14 +14177,16 @@ function createWindow() {
                     const p4 = !!res.newRec && res.newRec.hasPhotoNode === false && res.newRec.nodes >= 2;
                     const p5 = fakeDone && !!im2 && im2.ok && fontRes.recs >= 1
                         && fontRes.titles.indexOf(FAKE) >= 0 && fontRes.shown && fontRes.maskActive;
+                    const p7 = !!ui && ui.buttonsOk && ui.hasExIcon && String(ui.exTitle).indexOf('只导出') >= 0
+                        && ui.selCount === 1 && String(ui.label).indexOf('1') >= 0 && ui.selBadge;
                     const p6 = !!cleanup && cleanup.left === res.before;      // 收尾：导入的两份都删干净、原有模板没动
-                    tplIoOk = p1 && p2 && p2b && p3 && p4 && p5 && p6;
+                    tplIoOk = p1 && p2 && p2b && p3 && p4 && p5 && p6 && p7;
                     console.log('[cover-maker] selftest tplio 数据:', JSON.stringify({ res, pack: t0 ? { thumb: String(t0._thumbB64 || '').length, files: (t0.filePack || []).length, fonts: (pack.fonts || []).map((f) => f.family + ':' + String(f.b64 || '').length) } : null, fontAfter1, im2: im2 && { ok: !!im2.ok, added: (im2.added || []).slice(), fonts: (im2.fonts && im2.fonts.added) || [] }, fontRes, cleanup }));
                     console.log('[cover-maker] selftest tplio 判据:', JSON.stringify({
-                        '①存1个模板→导出成功(带缩略图+图片)': p1, '②包里没有本机绝对路径+带缩略图/图片/字体文件': p2,
+                        '①存1个模板→单张导出只带1个/全量导出带全部(含缩略图+图片+字体)': p1, '②包里没有本机绝对路径+带缩略图/图片/字体文件': p2,
                         '②b 导入后随包装的字体不再算缺': p2b,
                         '③导入多1个/名字带(收到)/图片落盘真实存在': p3, '④导入的模板里没有照片节点': p4,
-                        '⑤缺字体提示(改假字体再导入)': p5, '⑥收尾删干净且原有模板不变': p6, p3parts: p3parts, ok: tplIoOk }));
+                        '⑤缺字体提示(改假字体再导入)': p5, '⑥收尾删干净且原有模板不变': p6, '⑦三个按钮不重叠/单张导出图标/Ctrl点=勾选': p7, ui: ui, p3parts: p3parts, ok: tplIoOk }));
                 }
 
                 // 可选场景：--subjshadow 主体阴影（用户 2026-10-15「给提取出来的主体也加上阴影功能」）

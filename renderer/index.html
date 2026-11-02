@@ -291,6 +291,14 @@ window.addEventListener('DOMContentLoaded', function () {
     .tpp-card.off .tpp-thumb { opacity: 0.45; }
     .tpp-card .sp-item-del { top: 4px; right: 4px; width: 20px; height: 20px; font-size: 14px; }
     .tpp-card:hover .sp-item-del { display: flex; }
+    /* 2026-11-02：单张导出（悬停出现，左上角；跟右上角删除对称） + Ctrl/⌘ 点勾选的高亮 */
+    .tpp-card .tpp-ex { left: 4px; right: auto; font-size: 13px; }
+    .tpp-card.sel .tpp-thumb { outline: 2px solid var(--color-yellow, #FEC600); outline-offset: 1px; }
+    .tpp-card.sel .tpp-ex { display: none; }
+    .tpp-sel-badge { position: absolute; left: 4px; top: 4px; width: 20px; height: 20px; border-radius: 50%;
+        background: var(--color-yellow, #FEC600); color: #222; font-size: 13px; line-height: 20px; text-align: center;
+        display: none; pointer-events: none; }
+    .tpp-card.sel .tpp-sel-badge { display: block; }
     .tpp-msg { margin-bottom: 10px; padding: 8px 10px; border-radius: 7px; font-size: 12px; line-height: 1.6; background: #fff4e5; color: #8a5a00; border: 1px solid #f0d9b0; }
     .tpp-msg[hidden] { display: none; }
     .sp-cat .tpp-count { flex-shrink: 0; font-size: 11px; opacity: 0.6; }
@@ -14062,7 +14070,7 @@ window.addEventListener('DOMContentLoaded', function () {
         //     画布上没有这个比例的框 → 卡片发灰，点了在弹出框里说原因（不收起）。
         //   · 卡片悬停 × = 删除（和贴纸一样先弹「确认删除」）；右键 = 应用 / 预览大图（原来的预览弹窗）/ 改名 / 删除。
         //   · 左栏「素材库 → 模板」那个画布下方的面板不动；两边都改同一份模板数据（MYTPL），改完互相刷新。
-        const TPP = { cat: '', query: '', editing: null, pendingId: null };   // cat：'' = 全部 / 比例 key / 'old' / 'g:<分组 id>'
+        const TPP = { cat: '', query: '', editing: null, pendingId: null, sel: {} };   // sel：Ctrl/⌘ 点卡片勾选的模板 id（批量导出用）   // cat：'' = 全部 / 比例 key / 'old' / 'g:<分组 id>'
 
         // ---- 模板自定义分组（用户 2026-10-17「模板也要能自己定义分组」）----
         //   和贴纸的自定义分组同一套做法：存 localStorage `cm_tplGroups` = [{ id, name, items: [模板 id] }]；
@@ -14211,6 +14219,7 @@ window.addEventListener('DOMContentLoaded', function () {
                 else e.innerHTML = '还没有模板<br>先在画框里放好文字 / 贴纸，再点右上角<b>「＋ 存为模板」</b>（或按 Ctrl+S）<br>每块有文字 / 贴纸的框各存一个模板，应用时自动放进同比例的框';
                 grid.appendChild(e);
             }
+            tppSyncExportBtn();                       // 2026-11-02：勾选数变了 / 模板删了 → 头部按钮文字跟着变
         }
 
         function tppGroupRow(g) {
@@ -14249,6 +14258,45 @@ window.addEventListener('DOMContentLoaded', function () {
             return d;
         }
 
+        // 2026-11-02 模板导出（用户「导出模板要能够单独导出，也可以批量导出」）
+        //   · 单独：卡片左上角 ⤓ / 右键「导出这个模板…」→ tppExport([id])
+        //   · 批量：Ctrl/⌘ 点卡片勾选 → 头部「导出 N」只导勾上的；没勾 → 导出当前列表全部
+        function tppSelIds() {
+            const alive = {};
+            (MYTPL.items || []).forEach((x) => { alive[x.id] = 1; });
+            return Object.keys(TPP.sel || {}).filter((id) => alive[id]);
+        }
+        function tppToggleSel(id) {
+            TPP.sel = TPP.sel || {};
+            if (TPP.sel[id]) delete TPP.sel[id]; else TPP.sel[id] = 1;
+            tppSyncExportBtn();
+            tppRender();
+        }
+        function tppSyncExportBtn() {
+            const b = document.getElementById('tppExport');
+            if (!b) return;
+            const n = tppSelIds().length;
+            b.textContent = n ? ('导出 ' + n) : '导出';
+            b.title = n ? ('只导出勾选的 ' + n + ' 个模板（图片、字体一起带走）')
+                        : '导出模板发给别人（图片、字体一起带走）；Ctrl / ⌘ 点卡片可以先勾选，只导勾上的';
+        }
+        async function tppExport(ids, label) {
+            const api = window.coverApp && window.coverApp.myTemplates;
+            if (!api || typeof api.exportPack !== 'function') { tppMsg('桌面版才能导出模板'); return null; }
+            const r = await api.exportPack(Array.isArray(ids) ? ids : []);
+            if (!r || r.ok === false) {
+                if (!(r && r.canceled)) tppMsg('导出失败：' + ((r && r.reason) || '未知原因'));
+                return r;
+            }
+            let m = '已导出 ' + r.templates + ' 个模板' + (label ? '（' + label + '）' : '')
+                + (r.images ? '，含图片 ' + r.images + ' 张' : '');
+            if (r.missing && r.missing.length) m += '；' + r.missing.length + ' 个文件没找到，已跳过：' + r.missing.slice(0, 3).join('、');
+            m += ' → ' + r.file;
+            tppMsg(m);
+            hintStatus(m);
+            return r;
+        }
+
         function tppCard(t) {
             const d = document.createElement('div');
             const ok = tppFits(t);
@@ -14274,9 +14322,25 @@ window.addEventListener('DOMContentLoaded', function () {
             del.title = '删除这个模板';
             del.onclick = (e) => { e.stopPropagation(); tppDelete(t); };
             d.appendChild(del);
+            // 2026-11-02 单独导出（用户「导出模板要能够单独导出，也可以批量导出」）：
+            //   每张卡片悬停时左上角出一个 ⤓ = 只导出这一个；Ctrl/⌘ 点卡片 = 勾选，勾了之后头部「导出」只导勾上的。
+            const ex = document.createElement('button');
+            ex.className = 'sp-item-del tpp-ex';
+            ex.textContent = '⤓';
+            ex.title = '只导出这一个模板（图片、字体一起带走）';
+            ex.onclick = (e) => { e.stopPropagation(); tppExport([t.id], t.name); };
+            d.appendChild(ex);
+            const badge = document.createElement('span');
+            badge.className = 'tpp-sel-badge';
+            badge.textContent = '✓';
+            d.appendChild(badge);
+            if (TPP.sel && TPP.sel[t.id]) d.classList.add('sel');
             th.title = t.name + (ok ? '：点一下应用到画布（Ctrl+Z 可撤回）' : '：画布上没有 ' + (t.ratioLabel || ratioLabelOf(t.ratio)) + ' 的框，先在左栏勾上对应的平台')
                 + '；右键更多';
-            d.onclick = () => tppApply(t);
+            d.onclick = (e) => {
+                if (e && (e.ctrlKey || e.metaKey)) { tppToggleSel(t.id); return; }   // Ctrl/⌘ 点 = 勾选（批量导出），不应用模板
+                tppApply(t);
+            };
             d.draggable = true;                                              // 拖到左边自定义分组 = 加进分组
             d.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/x-cm-tpl', t.id); e.dataTransfer.effectAllowed = 'copy'; });
             d.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); tppOpenMenu(e, t, d); });
@@ -14359,6 +14423,7 @@ window.addEventListener('DOMContentLoaded', function () {
             };
             addRow('应用到画布', () => tppApply(t));
             addRow('预览大图…', () => { closeTplPop(); openTplPreview(t.id); });
+            addRow('导出这个模板…', () => tppExport([t.id], t.name));          // 2026-11-02：单独导出
             addRow('改名', () => tppStartRename(t, card));
             const sepRow = () => { const hr = document.createElement('div'); hr.className = 'sp-menu-sep'; m.appendChild(hr); };
             sepRow();
@@ -14443,17 +14508,10 @@ window.addEventListener('DOMContentLoaded', function () {
             // 2026-11-02 模板给别人用：导出（图片一起带走）/ 导入（图片落在本机、应用时不上画布；缺字体提示）
             const ex = document.getElementById('tppExport');
             if (ex) ex.onclick = async () => {
-                const api = window.coverApp && window.coverApp.myTemplates;
-                if (!api || typeof api.exportPack !== 'function') { tppMsg('桌面版才能导出模板'); return; }
-                const r = await api.exportPack([]);                       // 空数组 = 导出全部模板
-                if (!r || r.ok === false) {
-                    if (!(r && r.canceled)) tppMsg('导出失败：' + ((r && r.reason) || '未知原因'));
-                    return;
-                }
-                let m = '已导出 ' + r.templates + ' 个模板' + (r.images ? '（含图片 ' + r.images + ' 张）' : '') + ' → ' + r.file;
-                if (r.missing && r.missing.length) m += '；有 ' + r.missing.length + ' 个文件没找到，已跳过：' + r.missing.slice(0, 3).join('、');
-                tppMsg(m);
-                hintStatus(m);
+                const sel = tppSelIds();
+                // 勾过 = 只导勾上的（批量）；没勾 = 导出全部
+                const r = await tppExport(sel, sel.length ? '已选 ' + sel.length + ' 个' : '全部');
+                if (r && r.ok) { TPP.sel = {}; tppSyncExportBtn(); tppRender(); }
             };
             const im = document.getElementById('tppImport');
             if (im) im.onclick = async () => {
