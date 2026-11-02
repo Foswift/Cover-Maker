@@ -1139,9 +1139,15 @@ window.addEventListener('DOMContentLoaded', function () {
        ③ 度数框用 `.tp-num`（56px），与距离框**同宽**。 */
     #tpShadowRow .prop-label, #tpShadowAngleRow .prop-label, #tpShadowOpRow .prop-label, #tpShadowSizeRow .prop-label { flex: 0 0 35px; white-space: nowrap; }
     #tpShadowAngleRow .angle-dial { margin-right: 8px; }
-    /* 2026-11-02 渐变角度行（文字 / 贴纸 / 描边 / 阴影各一行）：列宽与阴影角度行同一套 35px 标签 + 26px 圆盘 + 8px 右留 */
-    #textProps .tp-gradang-row .prop-label { flex: 0 0 35px; white-space: nowrap; }
-    #textProps .tp-gradang-row .angle-dial { margin-right: 8px; }
+    /* 2026-11-02 渐变角度（用户「把角度两个字去掉，只要角度盘和度数框，放在渐变块后面同一排」）：
+       挤进渐变那一排 → 圆盘缩到 22px、度数框 44px（240px 侧栏放得下，实测 195px 内容宽） */
+    #textProps .tp-grad-row { flex-wrap: nowrap; gap: 4px; }                 /* 一行放到底，别悄悄换行 */
+    #textProps .tp-grad-row .prop-label { flex: 0 0 auto; white-space: nowrap; }
+    #textProps .tp-grad-row .tp-grad-sw { width: 22px; height: 18px; }
+    #textProps .tp-grad-row .tp-grad-arrow { font-size: 11px; }
+    #textProps .tp-grad-row .angle-dial { width: 20px; height: 20px; margin: 0 3px 0 4px; }
+    #textProps .tp-grad-row .angle-dial .dial-handle { width: 6px; height: 6px; }
+    #textProps .tp-grad-row .tp-grad-ang { width: 38px; min-width: 0; flex: 0 0 38px; padding: 0 1px; text-align: center; font-size: 11px; }
     .tp-align { flex: 1; padding: 3px 0; font-size: 12px; }
     .tp-note { font-size: 11px; color: #999; margin-top: 8px; line-height: 1.5; }
 
@@ -2046,11 +2052,6 @@ window.addEventListener('DOMContentLoaded', function () {
                         <button type="button" class="tp-grad-sw" data-slot="0" title="起点色（上）= 这一项现在的颜色：点它再点色盘，或把颜色框里的色块拖进来"></button>
                         <span class="tp-grad-arrow">→</span>
                         <button type="button" class="tp-grad-sw" data-slot="1" title="终点色（下）：点它再点色盘，或把颜色框里的色块拖进来；和起点不一样就是渐变"></button>
-                    </div>
-                    <!-- 2026-11-02 用户「在每一个图层中有渐变的后面再加一个和阴影一样的角度盘，用来调整渐变颜色的角度」：
-                         跟阴影角度行同一套圆盘 + 度数框；没有渐变（两头同色）时圆盘压暗。 -->
-                    <div class="prop-row tp-gradang-row" data-ct="fill" data-gk="fill">
-                        <span class="prop-label">角度</span>
                         <div class="angle-dial dim" title="渐变角度：拖圆盘上的小圆点，或直接在右边输度数。0° = 从左到右，90° = 从上到下（默认），180° = 从右到左"><div class="dial-handle"></div></div>
                         <input type="number" min="0" max="359" step="1" value="90" class="tp-input tp-num tp-grad-ang" title="渐变角度（°）：0 = 左→右，90 = 上→下，180 = 右→左（顺时针一圈 360°）">
                     </div>
@@ -2060,11 +2061,6 @@ window.addEventListener('DOMContentLoaded', function () {
                         <button type="button" class="tp-grad-sw" data-slot="0" title="起点色（上）= 贴纸现在的颜色：点它再点色盘，或把颜色框里的色块拖进来"></button>
                         <span class="tp-grad-arrow">→</span>
                         <button type="button" class="tp-grad-sw" data-slot="1" title="终点色（下）：点它再点色盘，或把颜色框里的色块拖进来；和起点不一样就是渐变"></button>
-                    </div>
-                    <!-- 2026-11-02 用户「在每一个图层中有渐变的后面再加一个和阴影一样的角度盘，用来调整渐变颜色的角度」：
-                         跟阴影角度行同一套圆盘 + 度数框；没有渐变（两头同色）时圆盘压暗。 -->
-                    <div class="prop-row tp-gradang-row" data-ct="shape" data-gk="tint">
-                        <span class="prop-label">角度</span>
                         <div class="angle-dial dim" title="渐变角度：拖圆盘上的小圆点，或直接在右边输度数。0° = 从左到右，90° = 从上到下（默认），180° = 从右到左"><div class="dial-handle"></div></div>
                         <input type="number" min="0" max="359" step="1" value="90" class="tp-input tp-num tp-grad-ang" title="渐变角度（°）：0 = 左→右，90 = 上→下，180 = 右→左（顺时针一圈 360°）">
                     </div>
@@ -2084,11 +2080,6 @@ window.addEventListener('DOMContentLoaded', function () {
                         <button type="button" class="tp-grad-sw" data-slot="0" title="起点色（上）= 这一项现在的颜色：点它再点色盘，或把颜色框里的色块拖进来"></button>
                         <span class="tp-grad-arrow">→</span>
                         <button type="button" class="tp-grad-sw" data-slot="1" title="终点色（下）：点它再点色盘，或把颜色框里的色块拖进来；和起点不一样就是渐变"></button>
-                    </div>
-                    <!-- 2026-11-02 用户「在每一个图层中有渐变的后面再加一个和阴影一样的角度盘，用来调整渐变颜色的角度」：
-                         跟阴影角度行同一套圆盘 + 度数框；没有渐变（两头同色）时圆盘压暗。 -->
-                    <div class="prop-row tp-gradang-row" data-ct="stroke" data-gk="stroke">
-                        <span class="prop-label">角度</span>
                         <div class="angle-dial dim" title="渐变角度：拖圆盘上的小圆点，或直接在右边输度数。0° = 从左到右，90° = 从上到下（默认），180° = 从右到左"><div class="dial-handle"></div></div>
                         <input type="number" min="0" max="359" step="1" value="90" class="tp-input tp-num tp-grad-ang" title="渐变角度（°）：0 = 左→右，90 = 上→下，180 = 右→左（顺时针一圈 360°）">
                     </div>
@@ -2126,11 +2117,6 @@ window.addEventListener('DOMContentLoaded', function () {
                         <button type="button" class="tp-grad-sw" data-slot="0" title="起点色（上）= 这一项现在的颜色：点它再点色盘，或把颜色框里的色块拖进来"></button>
                         <span class="tp-grad-arrow">→</span>
                         <button type="button" class="tp-grad-sw" data-slot="1" title="终点色（下）：点它再点色盘，或把颜色框里的色块拖进来；和起点不一样就是渐变"></button>
-                    </div>
-                    <!-- 2026-11-02 用户「在每一个图层中有渐变的后面再加一个和阴影一样的角度盘，用来调整渐变颜色的角度」：
-                         跟阴影角度行同一套圆盘 + 度数框；没有渐变（两头同色）时圆盘压暗。 -->
-                    <div class="prop-row tp-gradang-row" data-ct="shadow" data-gk="shadow">
-                        <span class="prop-label">角度</span>
                         <div class="angle-dial dim" title="渐变角度：拖圆盘上的小圆点，或直接在右边输度数。0° = 从左到右，90° = 从上到下（默认），180° = 从右到左"><div class="dial-handle"></div></div>
                         <input type="number" min="0" max="359" step="1" value="90" class="tp-input tp-num tp-grad-ang" title="渐变角度（°）：0 = 左→右，90 = 上→下，180 = 右→左（顺时针一圈 360°）">
                     </div>
@@ -12582,7 +12568,7 @@ window.addEventListener('DOMContentLoaded', function () {
         //   四项渐变（文字 fill / 贴纸 tint / 描边 stroke / 阴影 shadow）后面各跟一行「角度」：圆盘 + 度数框，
         //   视觉与手感跟阴影角度行同一套；角度就写在该项渐变对象的 angle（0° = 左→右，90° = 上→下，默认 90）。
         //   没有渐变（两头同色 → visualGradOf 返 null）时圆盘压暗：转了没效果，跟阴影距离 0 的提示口径一致。
-        function gradAngRow(k) { return document.querySelector('#textProps .tp-gradang-row[data-gk="' + k + '"]'); }
+        function gradAngRow(k) { return document.querySelector('#textProps .tp-grad-row[data-gk="' + k + '"]'); }   // 圆盘和度数框就在渐变那一排里
         function gradAngPaint(k, deg) {
             const row = gradAngRow(k); if (!row) return;
             const dial = row.querySelector('.angle-dial'), handle = row.querySelector('.dial-handle');

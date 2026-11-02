@@ -13930,13 +13930,6 @@ function createWindow() {
                         n.setAttr('tintGradient', { colors: ['#FF0000', '#0000FF'], angle: 90, base: '#FF0000' });
                         if (tr) { tr.nodes([]); }
                         window.__cmGrad.angleRows(n); mainLayer.batchDraw(); return true; })()`);
-                    O.控件 = await jsx(`(function () { var o = {};
-                        ['fill','tint','stroke','shadow'].forEach(function (k) {
-                            var row = window.__cmGrad.angleRow(k);
-                            var d = row && row.querySelector('.angle-dial'), i = row && row.querySelector('.tp-grad-ang');
-                            o[k] = row ? { 有盘: !!d, 有框: !!i, 值: i && i.value, 压暗: !!(d && d.classList.contains('dim')) } : null;
-                        });
-                        return o; })()`);
                     const sample = (url) => jsx(`(async function () { var im = new Image(); im.src = ${JSON.stringify('')} + ${JSON.stringify(url || '')};
                         await im.decode();
                         var c = document.createElement('canvas'); c.width = im.width; c.height = im.height;
@@ -13958,13 +13951,32 @@ function createWindow() {
                     await jsx(`window.__cmGrad.setAngle('tint', 45); true`);
                     O.角45 = await jsx(`(function () { var n = layerNodes().filter(function (x) { return x.getAttr('aid') === ` + nodeJs + `; })[0];
                         var g = window.__cmGrad.of(n, 'tint'); return g ? Math.round(g.angle) : null; })()`);
-                    O.回显45 = await jsx(`(function () { var n = layerNodes().filter(function (x) { return x.getAttr('aid') === ` + nodeJs + `; })[0];
-                        window.__cmGrad.angleRows(n); var row = window.__cmGrad.angleRow('tint');
-                        var i = row && row.querySelector('.tp-grad-ang'), d = row && row.querySelector('.angle-dial');
-                        return { 值: i && i.value, 压暗: !!(d && d.classList.contains('dim')) }; })()`);
-                    await jsx(`(function () { var n = layerNodes().filter(function (x) { return x.getAttr('aid') === ` + nodeJs + `; })[0];
-                        n.setAttr('tintGradient', null); window.__cmGrad.angleRows(n); mainLayer.batchDraw(); return true; })()`);
-                    O.无渐变 = await jsx(`(function () { var row = window.__cmGrad.angleRow('tint');
+                    // —— 界面：只有选中**文字**时文字属性面板才显示，所以这一步单开一段文字来量（四行是否同排 / 溢出 / 回显）
+                    O.控件 = await jsx(`(function () { var t = makeTextNode(120, 150); t.text('渐变角度');
+                        t.setAttr('fillGradient', { colors: ['#FF0000', '#0000FF'], angle: 45, base: t.fill() });
+                        mainLayer.add(t); window.__cmText = t; selectNode(t); mainLayer.draw(); refreshLayers();
+                        var o = {};
+                        ['fill','tint','stroke','shadow'].forEach(function (k) {
+                            var row = window.__cmGrad.angleRow(k);
+                            // 隐藏分页的那几行（.ct-off = display:none）量不到尺寸 → 量之前先临时显示，量完还原
+                            var wasOff = !!(row && row.classList.contains('ct-off'));
+                            if (wasOff) row.classList.remove('ct-off');
+                            var d = row && row.querySelector('.angle-dial'), i = row && row.querySelector('.tp-grad-ang');
+                            var sw = row && row.querySelector('.tp-grad-sw');
+                            var mid = function (el) { var r = el && el.getBoundingClientRect(); return r ? Math.round(r.top + r.height / 2) : null; };
+                            o[k] = row ? { 有盘: !!d, 有框: !!i, 值: i && i.value, 压暗: !!(d && d.classList.contains('dim')),
+                                           标签去掉: !row.querySelector('.prop-label + .prop-label') && !row.querySelector('.tp-gradang-row') && !!row.querySelector('.tp-grad-sw') && d.parentElement === row && i.parentElement === row,
+                                           同一排: !!(sw && d && i) && d.parentElement === row && i.parentElement === row
+                                                   && Math.abs(mid(sw) - mid(d)) <= 6 && Math.abs(mid(d) - mid(i)) <= 6,
+                                           不溢出: row.clientWidth > 0 && row.scrollWidth <= row.clientWidth + 2,
+                                           y: { 色块: mid(sw), 盘: mid(d), 框: mid(i) }, w: [row.clientWidth, row.scrollWidth] } : null;
+                            if (wasOff && row) row.classList.add('ct-off');
+                        });
+                        window.__cmGrad.angleRows(window.__cmText);
+                        return o; })()`);
+                    O.无渐变 = await jsx(`(function () { window.__cmText.setAttr('fillGradient', null);
+                        window.__cmGrad.angleRows(window.__cmText);
+                        var row = window.__cmGrad.angleRow('fill');
                         var i = row && row.querySelector('.tp-grad-ang'), d = row && row.querySelector('.angle-dial');
                         return { 值: i && i.value, 压暗: !!(d && d.classList.contains('dim')) }; })()`);
                     await jsx(`(function () { layerNodes().forEach(function (n) { n.destroy(); });
@@ -13980,8 +13992,8 @@ function createWindow() {
                         const cjk = /[\u4e00-\u9fff]/;
                         const be = document.getElementById('tppExport'), bi = document.getElementById('tppImport');
                         out.模板按钮 = [T(be), T(bi), A(be), A(bi)];
-                        out.角度行 = Array.prototype.map.call(document.querySelectorAll('#textProps .tp-gradang-row'), function (row) {
-                            return [T(row.querySelector('.prop-label')), A(row.querySelector('.angle-dial')), A(row.querySelector('.tp-grad-ang'))];
+                        out.角度行 = Array.prototype.map.call(document.querySelectorAll('#textProps .tp-grad-row'), function (row) {
+                            return [A(row.querySelector('.angle-dial')), A(row.querySelector('.tp-grad-ang'))];
                         });
                         const all = out.模板按钮.concat.apply(out.模板按钮, out.角度行);
                         out.中文 = all.filter(function (s) { return cjk.test(String(s)); });
@@ -13993,11 +14005,15 @@ function createWindow() {
                     const ctl = O.控件 || {};
                     if (!(ctl.fill && ctl.fill.有盘 && ctl.fill.有框 && ctl.tint && ctl.tint.有盘 && ctl.tint.有框
                           && ctl.stroke && ctl.stroke.有盘 && ctl.stroke.有框 && ctl.shadow && ctl.shadow.有盘 && ctl.shadow.有框)) okG.push('四行控件');
-                    if (!(ctl.tint && ctl.tint.值 === '90' && !ctl.tint.压暗)) okG.push('有渐变时圆盘不压暗/回显 90');
+                    if (!(ctl.fill && ctl.fill.同一排 && ctl.tint && ctl.tint.同一排 && ctl.stroke && ctl.stroke.同一排 && ctl.shadow && ctl.shadow.同一排)) okG.push('角度盘和度数框在渐变同一排');
+                    if (!(ctl.fill && ctl.fill.同一排 && ctl.tint && ctl.tint.同一排 && ctl.stroke && ctl.stroke.同一排 && ctl.shadow && ctl.shadow.同一排)) okG.push('角度盘和度数框在渐变同一排');
+                    if (!(ctl.fill && ctl.fill.不溢出 && ctl.tint && ctl.tint.不溢出 && ctl.stroke && ctl.stroke.不溢出 && ctl.shadow && ctl.shadow.不溢出)) okG.push('一行放得下(不溢出)');
+                    if (!(ctl.fill && ctl.fill.值 === '45' && !ctl.fill.压暗)) okG.push('有渐变时圆盘不压暗/回显 45');
+                    if (!(ctl.tint && ctl.tint.压暗 && ctl.stroke && ctl.stroke.压暗 && ctl.shadow && ctl.shadow.压暗)) okG.push('没渐变的三行压暗');
                     if (!(O.角0 === 0 && O.角45 === 45)) okG.push('改角度接口');
                     if (!(O.竖 && O.竖.top && O.竖.bottom && O.竖.top.r > O.竖.top.b + 40 && O.竖.bottom.b > O.竖.bottom.r + 40)) okG.push('90° 上红下蓝');
                     if (!(O.横 && O.横.left && O.横.right && O.横.left.r > O.横.left.b + 40 && O.横.right.b > O.横.right.r + 40)) okG.push('0° 左红右蓝');
-                    if (!(O.回显45 && O.回显45.值 === '45' && !O.回显45.压暗)) okG.push('度数框回显 45');
+
                     if (!(O.无渐变 && O.无渐变.压暗 && O.无渐变.值 === '90')) okG.push('没渐变时压暗');
                     if (!(i18nNew && Array.isArray(i18nNew.角度行) && i18nNew.角度行.length === 4 && Array.isArray(i18nNew.中文) && i18nNew.中文.length === 0)) okG.push('新增界面英文');
                     gradAngleOk = okG.length === 0;
