@@ -620,6 +620,10 @@ async function removeTemplate(id) {
 function registerTemplateIpc() {
     // 颜色板块右键复制色值（用户 2026-10-15「右键可以复制色框的色值」）：走主进程剪贴板，Mac/Win 都稳（渲染层 navigator.clipboard 要焦点）
     ipcMain.handle('clipboard:write-text', async (_e, text) => { clipboard.writeText(String(text || '').slice(0, 200)); return true; });
+    // 读系统剪贴板里的**纯文本**（2026-11-02 用户「从微信复制文字后在画布上粘贴不上」）：
+    //   微信 / 网页 / 文档里复制的都是系统剪贴板 text/plain，渲染层原来只认应用内部的 nodeClipboard → 一个字都进不来。
+    //   这里给渲染层一个读口子；读不到（剪贴板里只有图片 / 为空）返回空串，渲染层据此提示，不当成错误。
+    ipcMain.handle('clipboard:read-text', async () => { try { return String(clipboard.readText() || ''); } catch (err) { return ''; } });
     ipcMain.handle('templates:list', async () => readTemplates());
 
     ipcMain.handle('templates:add', async (_e, entry) => {
@@ -13670,6 +13674,120 @@ function createWindow() {
                     console.log('[cover-maker] selftest copyhex 判据:', JSON.stringify({ '①RGB页色块右键=剪贴板色值(底部提示条不显示)': h1, '②提色板色块右键=剪贴板色值': h2, '③右键不改文字色': h3, '④板块外右键不碰剪贴板': h4, ok: copyHexOk }));
                 }
 
+                // 可选场景：--syspaste 系统剪贴板里的文字也能粘到画布（2026-11-02 用户「从微信复制文字后在画布上粘贴不上」）
+                //   判据：① 系统剪贴板放两行字、画布上什么都没有 → 真按 Ctrl+V → 多出 1 段文字、内容一字不差
+                //        ② 再按一次 → 又多一段（可以连着粘）
+                //        ③ 负对照 window.__cmNoSysPaste → 一次都不多
+                //        ④ 焦点在输入框里按 Ctrl+V → 画布不多文字（不抢 DOM 的原生粘贴）
+                //        ⑤ 撤销一次 → 回到只粘了一段的状态
+                let sysPasteOk = true;
+                if (process.argv.includes('--syspaste')) {
+                    const js = (x) => win.webContents.executeJavaScript(x);
+                    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+                    const keyTap = async (key, mods) => {                    // 真按键（走真实输入管线 + 菜单加速键）
+                        win.webContents.sendInputEvent({ type: 'keyDown', keyCode: key, modifiers: mods || [] });
+                        win.webContents.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers: mods || [] });
+                        await wait(450);
+                    };
+                    const snap = () => js(`(function () {
+                        const ts = mainLayer.find('.文字').filter((n) => n.getParent() === mainLayer);
+                        return { 文字数: ts.length, 内容: ts.map((n) => n.text()),
+                                 位置: ts.map((n) => [Math.round(n.x()), Math.round(n.y())]),
+                                 画布: [Math.round(stage.width()), Math.round(stage.height())], 选中: tr.nodes().length,
+                                 调试: { selName: selectedNode ? selectedNode.name() : null, trCount: tr.nodes().length,
+                                         hist: [hist.index, hist.stack.length], 状态: (document.getElementById('statusText') || {}).textContent } };
+                    })()`);
+                    const TXT = '这是从微信复制过来的一段测试文字\n第二行也要一起粘';
+                    const clip0 = clipboard.readText();                       // 真系统剪贴板 → 跑完还原
+                    clipboard.writeText(TXT);
+                    await js('(function () { window.__cmHistoryReset(); if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); return true; })()');
+                    const S0 = await snap();
+                    await keyTap('V', ['control']);                           // ① 真 Ctrl+V
+                    await wait(300);
+                    const S1 = await snap();
+                    await keyTap('V', ['control']);                           // ② 再粘一次
+                    await wait(300);
+                    const S2 = await snap();
+                    await js('window.__cmNoSysPaste = true; true');           // ③ 负对照
+                    await keyTap('V', ['control']);
+                    await wait(300);
+                    const S3 = await snap();
+                    await js('window.__cmNoSysPaste = false; true');
+                    // ④ 输入框里按 Ctrl+V：画布不许动（DOM 自己粘，input 有没有拿到值只作参考数据打出来）
+                    const f1 = await js(`(function () {
+                        const inp = document.createElement('input'); inp.id = '__cmClipInput'; document.body.appendChild(inp); inp.focus();
+                        return document.activeElement === inp;
+                    })()`);
+                    await keyTap('V', ['control']);
+                    await wait(300);
+                    const S4 = await snap();
+                    const f2 = await js(`(function () { const inp = document.getElementById('__cmClipInput'); const v = inp ? inp.value : '';
+                        if (inp) inp.remove(); return v; })()`);
+                    await win.webContents.executeJavaScript('window.__appCommand("undo")');   // ⑤ 撤销一次
+                    await wait(400);
+                    const S5 = await snap();
+                    // ⑥ 有平台框时（竖框 233 宽 < 这段字的自然宽 → 一定要走「折行 + 塞进框」那条分支）：文字要整段落在框里、并选中、撤销能回
+                    const f0 = await js(`(function () {
+                        activePlatforms.length = 0; activePlatforms.push('douyin'); mainPlatform = 'douyin';
+                        syncPlatformMenu(); drawPlatformFrame();
+                        return computeFrames().length;
+                    })()`);
+                    const S6 = await snap();
+                    await keyTap('V', ['control']);
+                    await wait(300);
+                    const F1 = await js(`(function () {
+                        const ts = mainLayer.find('.文字').filter((n) => n.getParent() === mainLayer);
+                        const n = ts[ts.length - 1];
+                        if (!n) return null;
+                        const r = n.getClientRect({ relativeTo: mainLayer });
+                        const frames = computeFrames().map(function (f) { return { gk: f.gk, rect: contentRect(f.rect) }; });
+                        const inside = frames.filter(function (f) {
+                            return r.x >= f.rect.x - 2 && r.y >= f.rect.y - 2
+                                && r.x + r.width <= f.rect.x + f.rect.width + 2 && r.y + r.height <= f.rect.y + f.rect.height + 2;
+                        });
+                        return { 框数: frames.length, 落在框里: inside.length > 0, 框: inside.map(function (f) { return f.gk; }),
+                                 选中: tr.nodes().length, fillFrame: n.getAttr('fillFrame') || '',
+                                 宽: Math.round(n.width()), 高: Math.round(n.height()), 折行: n.wrap ? n.wrap() : '',
+                                 rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)] };
+                    })()`);
+                    await win.webContents.executeJavaScript('window.__appCommand("undo")');
+                    await wait(400);
+                    const S7 = await snap();
+                    await js(`(function () {
+                        activePlatforms.length = 0; mainPlatform = null; syncPlatformMenu(); drawPlatformFrame(); return true;
+                    })()`);
+                    // ⑦ Ctrl+Shift+V = **只**粘系统剪贴板里的文字（画布里复制过对象也照粘文字，不被内部剪贴板挡住）
+                    await js(`(function () { window.__cmHistoryReset(); tr.nodes([]); selectedNode = null;
+                        const t = makeTextNode(60, 60); t.text('内部复制'); mainLayer.add(t); selectNode(t);
+                        mainLayer.draw(); refreshLayers(); return true; })()`);
+                    await keyTap('C', ['control']);                     // 应用内复制 → nodeClipboard 里有了 1 个对象
+                    await wait(200);
+                    const C1 = await snap();
+                    await keyTap('V', ['control']);                     // 普通 Ctrl+V → 粘的是**内部对象**
+                    await wait(300);
+                    const C2 = await snap();
+                    await keyTap('V', ['control', 'shift']);            // Ctrl+Shift+V → 粘的是**系统剪贴板文字**
+                    await wait(300);
+                    const C3 = await snap();
+                    clipboard.writeText(clip0);
+                    await js('(function () { mainLayer.find(".文字").filter((n) => n.getParent() === mainLayer).forEach((n) => n.destroy()); tr.nodes([]); selectedNode = null; mainLayer.draw(); refreshLayers(); window.__cmHistoryReset(); return true; })()');
+                    const p1 = S0.文字数 === 0 && S1.文字数 === 1 && S1.内容[0] === TXT && S1.选中 === 1;
+                    const p2 = S2.文字数 === 2 && S2.内容[1] === TXT;
+                    const p3 = S3.文字数 === 2;
+                    const p4 = !!f1 && S4.文字数 === 2;
+                    const p5 = S5.文字数 === 1;
+                    const p6 = f0 >= 2 && S6.文字数 === 1 && !!F1
+                        && F1.落在框里 && F1.选中 === 1 && F1.折行 === 'char' && S7.文字数 === 1;
+                    const p7 = C1.文字数 === 1 && C2.文字数 === 2 && C2.内容[1] === '内部复制'
+                        && C3.文字数 === 3 && C3.内容[2] === TXT;
+                    sysPasteOk = p1 && p2 && p3 && p4 && p5 && p6 && p7;
+                    console.log('[cover-maker] selftest syspaste 数据:', JSON.stringify({ S0, S1, S2, S3, S4, S5, f0, S6, F1, S7, C1, C2, C3, 输入框值: f2 }));
+                    console.log('[cover-maker] selftest syspaste 判据:', JSON.stringify({
+                        '①微信文字Ctrl+V=画布多一段(内容一字不差)': p1, '②再粘一次又多一段': p2,
+                        '③负对照一次都不多': p3, '④输入框里粘不建画布文字': p4, '⑤撤销一次回到一段': p5,
+                        '⑥有框时整段落在框里+选中+折行': p6, '⑦Ctrl+Shift+V只粘系统文字(内部有过对象也照粘)': p7, ok: sysPasteOk }));
+                }
+
                 // 可选场景：--subjshadow 主体阴影（用户 2026-10-15「给提取出来的主体也加上阴影功能」）
                 //   夹具：透明底上一个红圆当「主体」（cutoutOf，走 imgClipSceneFunc），画布上没有框
                 //   判据：① 选中主体 → 文字同款阴影页和圆盘；距离从 0 改 8 → fxShadow.on、进撤销一步（不再有「开启」按钮）
@@ -18688,7 +18806,7 @@ function createWindow() {
                     && frameWhiteOk
                     && r.stickers === stickerExpect
                     && libOk && libPasteOk && libRemoveOk && frameDragOk && stickerPasteOk && multiDragOk && skipOk && skipUiOk
-                    && textPasteOk && textEditOk && sidebarOk && auditOk && undoRedoOk && layerOrderOk && platCheckOk && layersOk                    && imgDropOk && frameStackOk && fillFrameOk && ffLateOk && imgDrag2Ok && frameMoveOk && frameScaleOk && exportOk && exportCancelOk && sharpOk && tplOk && fontUiOk && fontDockOk && ctPanelOk && dockLibsOk && fontWarnOk && whiteShadowOk && imgClipOk && decorClipOk && frameNosOk && layerMultiOk && textPathOk && imgOutOk && moveFrameOk && moveRightOk && shrinkFillOk && frameChildrenOk && frameKeepOk && copyPasteOk && tplRenameOk && zoomShiftOk && zoomShiftPosOk && platShareOk && qProbeOk && keyDelOk && strokeModeOk && macFontsOk && canvasZoomOk && zoomProbeOk && zoomFrameOk && landFillOk && marqueeOk && snapGuideOk && save2libOk && roundtripOk && save2libUiOk && fileMenuOk && fontMenuOk && fontPlanOk && fontImportOk && imgHitOk && fontFallbackOk && textRenderOk && winLifeOk && subjectOk && skewOk && colorsOk && layerEyeOk && layerRenameOk && editScaleOk && splitSwitchOk && cellPanOk && xhs11Ok && clickFrameOk && biliNumOk && creamOk && specialScaleOk && ctxSkewOk && colorSelOk && pasteFitOk && imgSkewOk && defTabOk && splitOk && colorPinsOk && layerCopyOk && subjShadowOk && imageFxOk && copyHexOk && extractGreenOk && board18Ok && layerMultiDragOk && widenOnlyOk && defaultFontOk && textFxOk && eraserOk && photoRotateOk && eyedropOk && toggleFollowOk && updateCheckOk && shapesOk && mcpOk && agentTxOk && agentLayoutOk && agentCreateOk && agentRegOk && agentSubjectOk && agentFontOk && agentOpacityOk && agentLayersOk && textGradOk && textStyleMemoryOk && frameShapeOk && gzhOk && customRatioOk && alignOk && weightOk && guidesOk && shiftDragOk && stickerGradOk && shapeFxOk && cornerOk && bubbleTailOk && tplSubjectOk;
+                    && textPasteOk && textEditOk && sidebarOk && auditOk && undoRedoOk && layerOrderOk && platCheckOk && layersOk                    && imgDropOk && frameStackOk && fillFrameOk && ffLateOk && imgDrag2Ok && frameMoveOk && frameScaleOk && exportOk && exportCancelOk && sharpOk && tplOk && fontUiOk && fontDockOk && ctPanelOk && dockLibsOk && fontWarnOk && whiteShadowOk && imgClipOk && decorClipOk && frameNosOk && layerMultiOk && textPathOk && imgOutOk && moveFrameOk && moveRightOk && shrinkFillOk && frameChildrenOk && frameKeepOk && copyPasteOk && tplRenameOk && zoomShiftOk && zoomShiftPosOk && platShareOk && qProbeOk && keyDelOk && strokeModeOk && macFontsOk && canvasZoomOk && zoomProbeOk && zoomFrameOk && landFillOk && marqueeOk && snapGuideOk && save2libOk && roundtripOk && save2libUiOk && fileMenuOk && fontMenuOk && fontPlanOk && fontImportOk && imgHitOk && fontFallbackOk && textRenderOk && winLifeOk && subjectOk && skewOk && colorsOk && layerEyeOk && layerRenameOk && editScaleOk && splitSwitchOk && cellPanOk && xhs11Ok && clickFrameOk && biliNumOk && creamOk && specialScaleOk && ctxSkewOk && colorSelOk && pasteFitOk && imgSkewOk && defTabOk && splitOk && colorPinsOk && layerCopyOk && subjShadowOk && imageFxOk && copyHexOk && extractGreenOk && board18Ok && layerMultiDragOk && widenOnlyOk && defaultFontOk && textFxOk && eraserOk && photoRotateOk && eyedropOk && toggleFollowOk && updateCheckOk && shapesOk && mcpOk && agentTxOk && agentLayoutOk && agentCreateOk && agentRegOk && agentSubjectOk && agentFontOk && agentOpacityOk && agentLayersOk && textGradOk && textStyleMemoryOk && frameShapeOk && gzhOk && customRatioOk && alignOk && weightOk && guidesOk && shiftDragOk && stickerGradOk && shapeFxOk && cornerOk && bubbleTailOk && tplSubjectOk && sysPasteOk;
                 console.log('[cover-maker] selftest 分项:', JSON.stringify({
                     基础: !!(r.konva && r.stage && r.bridge), 库面板: popupLayerOk, 底部格子: emptyBoxOk, 底边对齐: bottomOk, 启动开着的库: dockAtStart.currentLib, 框: (onlyArg || framedrag || multidrag || plArg ? r.frames > 0 : r.frames === 0), 框样式: frameWhiteOk,
                     贴纸数: r.stickers === stickerExpect, 素材库: libOk, 素材贴图: libPasteOk, 素材删除: libRemoveOk,
@@ -18696,7 +18814,7 @@ function createWindow() {
                     复制粘贴: copyPasteOk,
                     文字贴入: textPasteOk, 整组编辑: textEditOk, 左栏: sidebarOk, 体检: auditOk, 撤销重做: undoRedoOk,
                     层序: layerOrderOk, 图层面板: layersOk, 图片进画布: imgDropOk, 参考框: frameStackOk,
-                    导出: exportOk, 导出取消: exportCancelOk, 清晰度: sharpOk, 模板: tplOk, 字体库改名: tplRenameOk, 缩放后照片不漂: zoomShiftOk, '页面/窗口变了框位置不变': zoomShiftPosOk, '同比例平台=同一块框': platShareOk, '导出不压缩画质(按目标像素重渲染)': qProbeOk, 'Delete/回车快捷删除': keyDelOk, '外描边/内描边': strokeModeOk, 'Mac 字体表读族名': macFontsOk, 字体: fontUiOk, 字体库格子: fontDockOk, '文字/阴影/描边分页': ctPanelOk, 三库切格子: dockLibsOk, 字体缺失提示: fontWarnOk, 白框立体感: whiteShadowOk, 图片只在框里显示: imgClipOk, '文字/贴纸只在框里显示': decorClipOk, '图层后框编号': frameNosOk, '图层多选/复制图层/拖到框编号复制': layerMultiOk, 文字路径: textPathOk, 图片能移到画布外: imgOutOk, '照片拖到另一块框也显示': moveFrameOk, '缩小后框能拖到画布最右边': moveRightOk, '缩框后照片仍盖满整块框线': shrinkFillOk, '贴纸/文字也是框的子对象': frameChildrenOk, '改窗口后框排版守恒': frameKeepOk, 框选: marqueeOk, 中心准线: snapGuideOk, 框选存库: save2libOk, 往返一致: roundtripOk, 框选存库入口: save2libUiOk,                    画布随缩放等比: canvasZoomOk, '缩小/放大页面图不消失': zoomProbeOk, 横版拉满跟随: landFillOk, 图片拖进框自动铺满: fillFrameOk, 先拖图后开平台: ffLateOk, 框里拖图: imgDrag2Ok, '框+图整组拖': frameMoveOk, '相框等比缩放': frameScaleOk, 字体替代分平台: fontFallbackOk, 文字描边阴影尺度: textRenderOk, 窗口销毁安全: winLifeOk, 提取主体: subjectOk, 斜切: skewOk, 颜色板块: colorsOk, 图层小眼睛: layerEyeOk, 图层改名: layerRenameOk, '放大文字双击不变小': editScaleOk, '切分块照片不丢': splitSwitchOk, '格子里挪图不跑格': cellPanOk, '小红书1:1框': xhs11Ok, '点框=切数字+黄圈': clickFrameOk, '框编号同方向左边在前': biliNumOk, 奶油色主题: creamOk, '斜切后普通拖不错位': specialScaleOk, 右键斜切: ctxSkewOk, '选中文字点颜色跟着变': colorSelOk, '复制到别的框不出框': pasteFitOk, 图片斜切: imgSkewOk, 图层默认亮1: defTabOk, 分块: splitOk, 常驻颜色: colorPinsOk, '图层多选后复制粘贴': layerCopyOk, 主体阴影: subjShadowOk, '图片/贴纸描边阴影': imageFxOk, '右键复制色值': copyHexOk, '渐变小块色提得出': extractGreenOk, '提色板三排18格': board18Ok, '图层多选后画布上一起拖': layerMultiDragOk, '窗口只变宽图跟框': widenOnlyOk, 默认字体按使用次数: defaultFontOk, '字透明度/阴影透明度/阴影大小': textFxOk, 橡皮擦: eraserOk, 照片角外侧旋转: photoRotateOk, 吸管: eyedropOk, '勾平台框挪了框里东西跟着': toggleFollowOk, 检查更新: updateCheckOk, 形状: shapesOk, 'AI 调用(MCP)': mcpOk, 画布事务: agentTxOk, 自动排版落地: agentLayoutOk, 一键做封面: agentCreateOk, 自动接入Agent: agentRegOk, 'AI 抠主体': agentSubjectOk, 'AI 字体缺失提示': agentFontOk, '透明度 + 笔刷': agentOpacityOk, '文字/描边/阴影渐变': textGradOk, '最近文字样式记忆': textStyleMemoryOk, '框里的形状跟着缩放': frameShapeOk, 公众号: gzhOk, 对齐: alignOk, 字体样式: weightOk, 参考线: guidesOk, 'Shift 锁方向': shiftDragOk, 贴纸渐变: stickerGradOk, 形状同文字: shapeFxOk, 圆角: cornerOk, 气泡尾巴: bubbleTailOk, 模板带主体: tplSubjectOk, 帮助菜单: helpMenuOk, 字体菜单: fontMenuOk, '导入字体弹对话框(空清单不吞)': fontPlanOk, 导入字体: fontImportOk, '框外那截不可点(§0.99.21)': imgHitOk, 文件菜单: fileMenuOk
+                    导出: exportOk, 导出取消: exportCancelOk, 清晰度: sharpOk, 模板: tplOk, 字体库改名: tplRenameOk, 缩放后照片不漂: zoomShiftOk, '页面/窗口变了框位置不变': zoomShiftPosOk, '同比例平台=同一块框': platShareOk, '导出不压缩画质(按目标像素重渲染)': qProbeOk, 'Delete/回车快捷删除': keyDelOk, '外描边/内描边': strokeModeOk, 'Mac 字体表读族名': macFontsOk, 字体: fontUiOk, 字体库格子: fontDockOk, '文字/阴影/描边分页': ctPanelOk, 三库切格子: dockLibsOk, 字体缺失提示: fontWarnOk, 白框立体感: whiteShadowOk, 图片只在框里显示: imgClipOk, '文字/贴纸只在框里显示': decorClipOk, '图层后框编号': frameNosOk, '图层多选/复制图层/拖到框编号复制': layerMultiOk, 文字路径: textPathOk, 图片能移到画布外: imgOutOk, '照片拖到另一块框也显示': moveFrameOk, '缩小后框能拖到画布最右边': moveRightOk, '缩框后照片仍盖满整块框线': shrinkFillOk, '贴纸/文字也是框的子对象': frameChildrenOk, '改窗口后框排版守恒': frameKeepOk, 框选: marqueeOk, 中心准线: snapGuideOk, 框选存库: save2libOk, 往返一致: roundtripOk, 框选存库入口: save2libUiOk,                    画布随缩放等比: canvasZoomOk, '缩小/放大页面图不消失': zoomProbeOk, 横版拉满跟随: landFillOk, 图片拖进框自动铺满: fillFrameOk, 先拖图后开平台: ffLateOk, 框里拖图: imgDrag2Ok, '框+图整组拖': frameMoveOk, '相框等比缩放': frameScaleOk, 字体替代分平台: fontFallbackOk, 文字描边阴影尺度: textRenderOk, 窗口销毁安全: winLifeOk, 提取主体: subjectOk, 斜切: skewOk, 颜色板块: colorsOk, 图层小眼睛: layerEyeOk, 图层改名: layerRenameOk, '放大文字双击不变小': editScaleOk, '切分块照片不丢': splitSwitchOk, '格子里挪图不跑格': cellPanOk, '小红书1:1框': xhs11Ok, '点框=切数字+黄圈': clickFrameOk, '框编号同方向左边在前': biliNumOk, 奶油色主题: creamOk, '斜切后普通拖不错位': specialScaleOk, 右键斜切: ctxSkewOk, '选中文字点颜色跟着变': colorSelOk, '复制到别的框不出框': pasteFitOk, 图片斜切: imgSkewOk, 图层默认亮1: defTabOk, 分块: splitOk, 常驻颜色: colorPinsOk, '图层多选后复制粘贴': layerCopyOk, 主体阴影: subjShadowOk, '图片/贴纸描边阴影': imageFxOk, '右键复制色值': copyHexOk, '渐变小块色提得出': extractGreenOk, '提色板三排18格': board18Ok, '图层多选后画布上一起拖': layerMultiDragOk, '窗口只变宽图跟框': widenOnlyOk, 默认字体按使用次数: defaultFontOk, '字透明度/阴影透明度/阴影大小': textFxOk, 橡皮擦: eraserOk, 照片角外侧旋转: photoRotateOk, 吸管: eyedropOk, '勾平台框挪了框里东西跟着': toggleFollowOk, 检查更新: updateCheckOk, 形状: shapesOk, 'AI 调用(MCP)': mcpOk, 画布事务: agentTxOk, 自动排版落地: agentLayoutOk, 一键做封面: agentCreateOk, 自动接入Agent: agentRegOk, 'AI 抠主体': agentSubjectOk, 'AI 字体缺失提示': agentFontOk, '透明度 + 笔刷': agentOpacityOk, '文字/描边/阴影渐变': textGradOk, '最近文字样式记忆': textStyleMemoryOk, '框里的形状跟着缩放': frameShapeOk, 公众号: gzhOk, 对齐: alignOk, 字体样式: weightOk, 参考线: guidesOk, 'Shift 锁方向': shiftDragOk, 贴纸渐变: stickerGradOk, 形状同文字: shapeFxOk, 圆角: cornerOk, 气泡尾巴: bubbleTailOk, '系统剪贴板粘文字(微信复制→画布)': sysPasteOk, 模板带主体: tplSubjectOk, 帮助菜单: helpMenuOk, 字体菜单: fontMenuOk, '导入字体弹对话框(空清单不吞)': fontPlanOk, 导入字体: fontImportOk, '框外那截不可点(§0.99.21)': imgHitOk, 文件菜单: fileMenuOk
                 }));
                 console.log('[cover-maker] selftest ' + (ok ? 'PASS' : 'FAIL'));
                 app.exit(ok ? 0 : 1);
@@ -18898,6 +19016,7 @@ function buildMenu() {
                                 '【复制粘贴】在画布上**框选**（从空白处按住拖一个框；框里的**文字和贴纸**都会被选中，照片不会被框到）或点中一个对象 → Ctrl+C 复制 → Ctrl+V 粘贴',
                                 '　　　　　粘出来的会整体错开一点、并保持选中（可直接拖到另一个框，竖版做的搬到横版）；Ctrl+X = 剪切；可 Ctrl+Z 撤回',
                                 '　　　　　⚠ 只有**文字 / 贴纸**能复制：导入到画布的照片不参与（要搬照片就拖相框整体走，或双击后单独拖）',
+                                '　　　　　画布上没复制过东西时按 Ctrl+V = 粘**系统剪贴板里的文字**（微信 / 网页 / 文档里复制的一段话 → 直接在鼠标所在的那块框里生成一段文字，可接着拖 / 双击改）',
                                 '【模板】顶部绿色「保存为模板」（或 Ctrl+S）：画面上**每块框各存一个模板**，只存框里的文字 / 贴纸 / 路径文字（照片不存）；框里没有文字和贴纸就不存',
                                 '　　　　顶栏「模板」按比例分组（3:4 竖版 / 4:3 横版 / 16:9 …）；点一张 → 「应用到画布」只落到**同比例**的框，换掉框里原有的文字和贴纸，照片不动（可 Ctrl+Z）',
                                 '　　　　画布上没有同比例的框 → 提示「请选择你要发布的平台」，先在左栏勾上对应平台再应用；以前整块画布存的模板归「旧模板」组，应用还是整块替换',
@@ -18907,6 +19026,7 @@ function buildMenu() {
                                 '快捷键：',
                                 '　Ctrl+Z 撤销　Ctrl+Shift+Z / Ctrl+Y 重做',
                                 '　Ctrl+C / Ctrl+V / Ctrl+X 复制 / 粘贴 / 剪切**选中的对象**（只对文字、贴纸生效）',
+                                '　Ctrl+V 没复制过对象时 = 粘**系统剪贴板里的文字**（微信 / 网页复制的一段话 → 直接生成一段文字，落在鼠标所在的那块框里）',
                                 '　Ctrl+E 导出　Ctrl+I 导入图片　Delete / 退格 / 回车 删除选中的元素（可 Ctrl+Z 撤销）',
                                 '　拖文字时：参考框里会出现中心十字虚线，靠近框中心会自动吸附（±6px；贴纸/图片不吸附）',
                             ].join('\n'), [

@@ -14413,6 +14413,13 @@ window.addEventListener('DOMContentLoaded', function () {
             //   跟按钮 tooltip 写的一致。⚠ 正在输入框/画布文字编辑器里打字时不抢（免得存进半截文字）。
             // §0.97m：Ctrl+C / Ctrl+V / Ctrl+X = 复制 / 粘贴 / 剪切**选中的对象**（用户 2026-10-07 要的
             //   「框选后 ctrl+c ctrl+v」）。正在输入框/画布文字编辑器里打字时不抢（DOM 自己的复制粘贴照旧）。
+            // 2026-11-02：Ctrl+Shift+V = **只**粘系统剪贴板里的文字（不管应用内剪贴板里还有没有旧对象）。
+            //   内部剪贴板优先那条路会让「画布里复制过东西 → 再想粘微信文字」变成一直粘旧对象，这条给个明确的出口。
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && (e.key || '').toLowerCase() === 'v') {
+                const ae5 = document.activeElement;
+                const typing5 = !!ae5 && (ae5.tagName === 'INPUT' || ae5.tagName === 'TEXTAREA' || ae5.isContentEditable === true);
+                if (!typing5 && !(typeof ed !== 'undefined' && ed && ed.on)) { e.preventDefault(); pasteSystemClipboard(); return; }
+            }
             if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
                 const ae2 = document.activeElement;
                 const typing2 = !!ae2 && (ae2.tagName === 'INPUT' || ae2.tagName === 'TEXTAREA' || ae2.isContentEditable === true);
@@ -14424,7 +14431,10 @@ window.addEventListener('DOMContentLoaded', function () {
                     // ⚠ preventDefault 只在「我们真的接管了」时才喊：
                     //   画布上没选中东西 / 剪贴板空 → 放给 DOM（免得把页面上别的选取文字复制也吃掉）
                     if (k2 === 'v') {
-                        if (nodeClipboard && nodeClipboard.items.length) { e.preventDefault(); pasteClipboard(); return; }
+                        // 2026-11-02：内部剪贴板空**也接管** → pasteClipboard() 里会改读系统剪贴板（微信/网页复制的文字）。
+                        //   原来这里是「剪贴板空就放给 DOM」，可画布是 Konva 的 <canvas>，DOM 粘了也没地方落
+                        //   → 用户看到的就是「从微信复制的文字粘不上去」。
+                        e.preventDefault(); pasteClipboard(); return;
                     } else if (selectionNodes().length) {
                         // §0.97m.2：**只要有选区就接管**（哪怕选中的是图片）——
                         //   让 copySelection 把「只有文字和贴纸能复制」这句话说出来；
@@ -14470,6 +14480,22 @@ window.addEventListener('DOMContentLoaded', function () {
             if (exited && soloWas && selectedNode === soloWas && !window.__cmShowFramedBox) {
                 tr.nodes([]); selectedNode = null; updateStatus(null); showTextProps(null); refreshLayers();
             }
+        });
+
+        // 2026-11-02：系统剪贴板 → 画布（兜底那一条路）。
+        //   Ctrl+V 主路径走 keydown → pasteClipboard()；但菜单「编辑→粘贴」带同样的快捷键（Mac ⌘V 走菜单），
+        //   这条键盘事件可能到不了渲染层。真到不了时浏览器仍会发 paste 事件，这里接住，用事件里的 text/plain 直接建文字。
+        //   正在输入框 / 画布文字编辑器里打字 → 一律不抢（DOM 原生粘贴照旧）。
+        document.addEventListener('paste', function (e) {
+            const ae = document.activeElement;
+            const typing = !!ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable === true);
+            if (typing || (typeof ed !== 'undefined' && ed && ed.on)) return;
+            if (window.__cmNoSysPaste) return;
+            const dt = e.clipboardData;
+            const txt = dt ? String(dt.getData('text/plain') || dt.getData('text') || '') : '';
+            if (!txt.trim()) return;                       // 剪贴板里是图片 / 空 → 不动作（不抢）
+            e.preventDefault();
+            pasteSystemText(txt);
         });
 
         // ==================== 5. 图层操作 ====================
@@ -16319,7 +16345,13 @@ window.addEventListener('DOMContentLoaded', function () {
 
         function pasteClipboard() {
             if (window.__cmNoClip) return { ok: false, reason: '负对照' };
-            if (!nodeClipboard || !nodeClipboard.items.length) { hintStatus('剪贴板是空的'); return { ok: false, reason: '剪贴板空' }; }
+            // 2026-11-02：正在输入框 / 画布文字编辑器里打字 → 一个都不抢。
+            //   （菜单「粘贴」在 Mac 上也走这里，原来没这道闸：在输入框里按 ⌘V 会把画布上的旧对象又粘一份出来。）
+            const ae0 = document.activeElement;
+            const typing0 = !!ae0 && (ae0.tagName === 'INPUT' || ae0.tagName === 'TEXTAREA' || ae0.isContentEditable === true);
+            if (typing0 || (typeof ed !== 'undefined' && ed && ed.on)) return { ok: false, reason: '正在输入' };
+            // 2026-11-02：内部剪贴板空 → 改读**系统剪贴板**（微信 / 网页 / 文档里复制的纯文字都在这儿）
+            if (!nodeClipboard || !nodeClipboard.items.length) return pasteSystemClipboard();
             const now = Date.now();
             if (now - lastClipAt < 250) return { ok: false, reason: '刚粘过（菜单与快捷键重复触发）' };
             lastClipAt = now;
@@ -16344,6 +16376,90 @@ window.addEventListener('DOMContentLoaded', function () {
             pushHistory('粘贴 ' + made.length + ' 个对象', null);
             hintStatus('已粘贴 ' + made.length + ' 个对象（已选中，可直接拖到另一个框）');
             return { ok: true, pasted: made.length };
+        }
+
+        // ==================== §0.97n 系统剪贴板里的文字也可以粘到画布（2026-11-02）====================
+        // 用户原话：「为什么我从微信复制文字后在画布上粘贴不上」。
+        // 根因：画布 Ctrl+V 只认 nodeClipboard（应用内框选 Ctrl+C 存的快照），全项目没有一处读系统剪贴板；
+        //   微信里复制的文字是 text/plain，走的是系统剪贴板 → 一个字都进不来（状态栏只说「剪贴板是空的」）。
+        // 现在：内部剪贴板空 → 读系统剪贴板纯文本 → 在画布上建**一段真文字节点**（跟双击空白新建的是同一种，能拖 / 能改 / 能存模板）。
+        //   落点优先级：鼠标所在的那块框 → 复制后点过的框（clipTargetClick）→ 当前平台框中心 → 画布中心；
+        //   进了框就按其它文字的口径写 fillFrame 归属，再用 fitNodeIntoRect 兜一次（太长就折行，再不行等比缩、推回框里）。
+        // 负对照 window.__cmNoSysPaste（--syspaste 自检用）
+        let lastSysPasteAt = 0;              // 去重：菜单与快捷键会重复触发同一个粘贴（同 lastClipAt 那套）
+        const SYS_PASTE_MAX = 5000;          // 一次最多粘这么多字（微信里复制整篇文章也不会把画布撑爆）
+        function pasteSystemText(raw) {
+            if (window.__cmNoSysPaste) return { ok: false, reason: '负对照' };
+            if (!mainLayer || !stage) return { ok: false, reason: '画布未初始化' };
+            const now = Date.now();
+            if (now - lastSysPasteAt < 300) return { ok: false, reason: '刚粘过（菜单与快捷键重复触发）' };
+            const full = String(raw == null ? '' : raw).replace(/\r\n?/g, '\n');
+            if (!full.trim()) { hintStatus('剪贴板里没有文字'); return { ok: false, reason: '剪贴板里没有文字' }; }
+            lastSysPasteAt = now;
+            const cut = full.length > SYS_PASTE_MAX;
+            const txt = cut ? full.slice(0, SYS_PASTE_MAX) : full;
+            // —— 落点：先在鼠标底下找框，其次复制后点过的框，再次当前平台框
+            let T = null, gk = '';
+            try {
+                const p = stage.getRelativePointerPosition ? stage.getRelativePointerPosition() : stage.getPointerPosition();
+                const hit = p ? frameAtPoint(p) : null;
+                if (hit) { T = hit.rect; gk = hit.frame.gk; }
+            } catch (err) { }
+            if (!T && clipTargetClick && clipTargetClick.gk) {
+                const r0 = frameRectByGk(clipTargetClick.gk);
+                if (r0) { T = contentRect(r0); gk = clipTargetClick.gk; }
+            }
+            if (!T && frameRect) T = contentRect(frameRect);      // 当前平台框（归属让 decorHomeStale 按几何再认）
+            const cx = T ? T.x + T.width / 2 : stage.width() / 2;
+            const cy = T ? T.y + T.height / 2 : stage.height() / 2;
+            // 归属框：T 是从「当前平台框」兜来的、gk 还空着时，按**落点中心**再认一次 →
+            //   保证「写在文字上的归属」和「它实际显示在哪块框里」一致（不然图层面板会把它编到别的框分页下）
+            if (!gk) {
+                try { const h2 = frameAtPoint({ x: cx, y: cy }); if (h2) gk = h2.frame.gk; } catch (e4) {}
+            }
+            const node = makeTextNode(cx, cy);
+            node.text(txt);
+            mainLayer.add(node);
+            // 长句子先按「落点区域宽度的 90%」折行（中文没空格，要 char 折行）→ 否则一行铺到框外，被框裁掉看着像没粘上
+            const maxW = Math.max(60, (T ? T.width : stage.width()) * 0.9);
+            if (node.width() > maxW) {
+                // ⚠ Konva 的折行开关是 `wrap()`（attr 'wrap'），没有 `textWrap()` —— 写错会整个收尾抛异常（--syspaste 带框跑时抓到）
+                if (typeof node.wrap === 'function') node.wrap('char'); else node.setAttr('wrap', 'char');
+                node.width(maxW);
+            }
+            node.x(Math.round(Math.max(T ? T.x + 6 : 0, cx - node.width() / 2)));
+            node.y(Math.round(Math.max(T ? T.y + 6 : 0, cy - node.height() / 2)));
+            if (T) {
+                if (gk) node.setAttr('fillFrame', gk);
+                fitNodeIntoRect(node, T);                         // 比框还大 → 等比缩到放得下；露到框外 → 推回来
+            }
+            try {
+                tr.moveToTop();
+                tr.nodes([node]);
+                selectedNode = node;
+                updateStatus(node);
+                showTextProps(node);
+                refreshLayers();
+                mainLayer.draw();
+                pushHistory('粘贴文字', null);
+            } catch (err) {
+                try { console.error('[cover-maker] 粘贴文字收尾失败:', (err && (err.stack || err.message)) || String(err)); } catch (e3) {}
+            }
+            hintStatus('已粘贴文字' + (cut ? '（太长，只取前 ' + SYS_PASTE_MAX + ' 字）' : '') + '（已选中，可直接拖 / 双击改字）');
+            return { ok: true, pasted: 1, chars: txt.length };
+        }
+        // 读系统剪贴板（走主进程，Mac/Win 都稳；渲染层 navigator.clipboard 要焦点，菜单触发时常常读不到）
+        function pasteSystemClipboard() {
+            if (window.__cmNoSysPaste) return { ok: false, reason: '负对照' };
+            const api = window.coverApp;
+            if (!api || typeof api.readText !== 'function') { hintStatus('这个版本读不到系统剪贴板'); return { ok: false, reason: '无桥' }; }
+            return Promise.resolve(api.readText()).then(function (t) {
+                return pasteSystemText(t);
+            }).catch(function (err) {
+                try { console.error('[cover-maker] readText 失败:', (err && (err.stack || err.message)) || String(err)); } catch (e2) {}
+                hintStatus('读系统剪贴板失败');
+                return { ok: false, reason: '读取失败' };
+            });
         }
 
         // ==================== §0.97m.3 粘到「复制后点过的那块框」（用户 2026-10-13）====================

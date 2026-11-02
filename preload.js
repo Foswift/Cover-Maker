@@ -35,6 +35,8 @@ contextBridge.exposeInMainWorld('coverApp', {
 
     // 写系统剪贴板（纯文本）：颜色板块右键复制色值用
     copyText: (text) => ipcRenderer.invoke('clipboard:write-text', String(text || '')),
+    // 读系统剪贴板（纯文本）：画布 Ctrl+V 粘微信/网页里复制的文字（2026-11-02）
+    readText: () => ipcRenderer.invoke('clipboard:read-text'),
 
     // 导入图片到画布（§0.22）：只返回路径，**不拷贝、不进素材库**
     pickImages: () => ipcRenderer.invoke('images:pick'),
