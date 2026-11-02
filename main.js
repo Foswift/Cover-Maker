@@ -13970,6 +13970,25 @@ function createWindow() {
                     await jsx(`(function () { layerNodes().forEach(function (n) { n.destroy(); });
                         activePlatforms.length = 0; mainPlatform = null; syncPlatformMenu(); drawPlatformFrame();
                         tr.nodes([]); selectedNode = null; mainLayer.draw(); refreshLayers(); window.__cmHistoryReset(); return true; })()`);
+                    // 英文界面：这次新增的界面字（模板导出/导入按钮 + 四行渐变角度）不许还剩中文
+                    const i18nNew = await jsx(`(async function () {
+                        const out = {};
+                        try { await window.CMI18N.setLang('en'); } catch (e) { return { err: String((e && e.message) || e) }; }
+                        await new Promise(function (r) { setTimeout(r, 450); });
+                        const T = (el) => el ? String(el.textContent || el.value || '').trim() : '';
+                        const A = (el) => el ? String(el.getAttribute('title') || '') : '';
+                        const cjk = /[\u4e00-\u9fff]/;
+                        const be = document.getElementById('tppExport'), bi = document.getElementById('tppImport');
+                        out.模板按钮 = [T(be), T(bi), A(be), A(bi)];
+                        out.角度行 = Array.prototype.map.call(document.querySelectorAll('#textProps .tp-gradang-row'), function (row) {
+                            return [T(row.querySelector('.prop-label')), A(row.querySelector('.angle-dial')), A(row.querySelector('.tp-grad-ang'))];
+                        });
+                        const all = out.模板按钮.concat.apply(out.模板按钮, out.角度行);
+                        out.中文 = all.filter(function (s) { return cjk.test(String(s)); });
+                        try { await window.CMI18N.setLang('zh'); } catch (e) {}
+                        await new Promise(function (r) { setTimeout(r, 300); });
+                        return out;
+                    })()`);
                     const okG = [];
                     const ctl = O.控件 || {};
                     if (!(ctl.fill && ctl.fill.有盘 && ctl.fill.有框 && ctl.tint && ctl.tint.有盘 && ctl.tint.有框
@@ -13980,8 +13999,9 @@ function createWindow() {
                     if (!(O.横 && O.横.left && O.横.right && O.横.left.r > O.横.left.b + 40 && O.横.right.b > O.横.right.r + 40)) okG.push('0° 左红右蓝');
                     if (!(O.回显45 && O.回显45.值 === '45' && !O.回显45.压暗)) okG.push('度数框回显 45');
                     if (!(O.无渐变 && O.无渐变.压暗 && O.无渐变.值 === '90')) okG.push('没渐变时压暗');
+                    if (!(i18nNew && Array.isArray(i18nNew.角度行) && i18nNew.角度行.length === 4 && Array.isArray(i18nNew.中文) && i18nNew.中文.length === 0)) okG.push('新增界面英文');
                     gradAngleOk = okG.length === 0;
-                    console.log('[cover-maker] selftest gradangle 明细:', JSON.stringify(O));
+                    console.log('[cover-maker] selftest gradangle 明细:', JSON.stringify({ ...O, 英文: i18nNew }));
                     console.log('[cover-maker] selftest gradangle 判据:', JSON.stringify({ 没过的步: okG, 渐变角度: gradAngleOk }));
                 }
 
@@ -19558,6 +19578,7 @@ function buildMenu() {
                                 '　　　　　⚠ 只有**文字 / 贴纸**能复制：导入到画布的照片不参与（要搬照片就拖相框整体走，或双击后单独拖）',
                                 '　　　　　画布上没复制过东西时按 Ctrl+V = 粘**系统剪贴板里的文字**（微信 / 网页 / 文档里复制的一段话 → 直接在鼠标所在的那块框里生成一段文字，可接着拖 / 双击改）',
                                 '【模板】顶部绿色「保存为模板」（或 Ctrl+S）：画面上**每块框各存一个模板**，只存框里的文字 / 贴纸 / 路径文字（照片不存）；框里没有文字和贴纸就不存',
+                                '　　　　　模板能**发给别人**：顶栏「模板」弹层右上角「导出」= 把模板连**缩略图 + 图片 + 字体文件**打成一个 .cmtpl；单张用卡片左上角 ⤓，批量就 Ctrl/⌘ 点卡片勾选再点「导出 N」；对方点「导入」即可（照片照旧不应用，缺的文件名 / 字体会提示）',
                                 '　　　　顶栏「模板」按比例分组（3:4 竖版 / 4:3 横版 / 16:9 …）；点一张 → 「应用到画布」只落到**同比例**的框，换掉框里原有的文字和贴纸，照片不动（可 Ctrl+Z）',
                                 '　　　　画布上没有同比例的框 → 提示「请选择你要发布的平台」，先在左栏勾上对应平台再应用；以前整块画布存的模板归「旧模板」组，应用还是整块替换',
                                 '【导出】顶部黄按钮：每个框各导一张，按平台标准像素，**固定白底**',
@@ -19597,7 +19618,9 @@ function buildMenu() {
                                 '[Copy / paste] **Drag a box** on the canvas (press on empty space and drag; all **text and stickers** inside are selected, photos aren\'t) or click an object → Ctrl+C copy → Ctrl+V paste',
                                 '　　Pasted items are offset slightly and stay selected (drag them to another frame, e.g. from portrait to landscape); Ctrl+X = cut; Ctrl+Z to undo',
                                 '　　⚠ Only **text / stickers** can be copied: photos imported to the canvas aren\'t (to move a photo, drag the whole frame, or double-click and drag it alone)',
+                                '　　Ctrl+V with nothing copied in the app = paste **text from the system clipboard** (a paragraph copied from WeChat / a web page / a doc → a new text layer in the frame under the cursor; drag or double-click to edit)',
                                 '[Templates] Green "Save as Template" at the top (or Ctrl+S): **each frame is saved as its own template**, storing only its text / stickers / path text (not photos); frames without text or stickers aren\'t saved',
+                                '　　Templates can be **shared**: in the top-bar Templates popup, "Export" bundles the templates with their **thumbnails + images + font files** into one .cmtpl; use the ⤓ icon on a card for a single one, or Ctrl/⌘ click cards to select then "Export N"; the other person clicks "Import" (photos still aren\'t applied; missing files / fonts are reported)',
                                 '　　Top bar "Templates" groups them by ratio (3:4 portrait / 4:3 landscape / 16:9 …); click one → "Apply to Canvas" lands only in frames of the **same ratio**, replacing their text and stickers; photos stay (Ctrl+Z works)',
                                 '　　No frame with the same ratio on the canvas → you\'ll be asked to "choose the platforms you publish to"; check the matching platform on the left first; old whole-canvas templates are in the "Old templates" group and still replace the whole canvas',
                                 '[Export] Yellow button at the top: one image per frame, at each platform\'s standard pixel size, **always on a white background**',

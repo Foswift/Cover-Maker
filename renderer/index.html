@@ -266,10 +266,10 @@ window.addEventListener('DOMContentLoaded', function () {
     .tpl-pop { width: 640px; }
     .tpp-head { position: relative; }
     .tpp-save {
-        position: absolute; right: 118px; top: 12px; height: 28px; padding: 0 12px;       /* 2026-11-02：右边并排三个（存为模板 / 导出 / 导入），默认位留给「存为模板」 */
+        position: absolute; right: 146px; top: 12px; height: 28px; padding: 0 12px;       /* 2026-11-02：右边并排三个（存为模板 / 导出 / 导入模板），默认位留给「存为模板」 */
         border: 1px solid #ccc; border-radius: 7px; background: #fff; color: #444; font-size: 12px; cursor: pointer;
     }
-    #tppExport { right: 66px; }
+    #tppExport { right: 92px; }
     #tppImport { right: 14px; }
     .tpp-save:hover { background: #f3f3f3; }
     .tpp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 12px; align-items: start; }
@@ -1750,7 +1750,7 @@ window.addEventListener('DOMContentLoaded', function () {
             </div>
             <button class="tpp-save" id="tppSave" title="把画布上每块有文字 / 贴纸的框各存成一个模板（Ctrl+S）">＋ 存为模板</button>
             <button class="tpp-save tpp-io" id="tppExport" title="把模板导出成一个 .cmtpl 文件发给别人（模板里的图片、缩略图一起带走）">导出</button>
-            <button class="tpp-save tpp-io" id="tppImport" title="导入别人给的 .cmtpl 模板（图片会一起进来；本机没有的字体会提示）">导入</button>
+            <button class="tpp-save tpp-io" id="tppImport" title="导入别人给的 .cmtpl 模板（图片会一起进来；本机没有的字体会提示）">导入模板</button>
         </div>
         <div class="sp-body">
             <div class="sp-cats" id="tppCats"></div>
@@ -14388,7 +14388,7 @@ window.addEventListener('DOMContentLoaded', function () {
             if (!b) return;
             const n = tppSelIds().length;
             b.textContent = n ? ('导出 ' + n) : '导出';
-            b.title = n ? ('只导出勾选的 ' + n + ' 个模板（图片、字体一起带走）')
+            b.title = n ? ('只导出勾选的模板（图片、字体一起带走）')
                         : '导出模板发给别人（图片、字体一起带走）；Ctrl / ⌘ 点卡片可以先勾选，只导勾上的';
         }
         async function tppExport(ids, label) {
