@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>封面制作器</title>
 <!-- 界面中英切换（2026-10-29）：字典 + 切换引擎，必须在所有界面脚本之前 -->
+    <!-- 2026-11-02 主题（AI 也能切换，见 set_theme）：上一次选的主题在画界面之前就用上，避免先闪一下默认主题 -->
+    <script>
+        (function () {
+            try { if (localStorage.getItem('cm_theme_v1') === 'classic') document.documentElement.setAttribute('data-theme', 'classic'); }
+            catch (e) { /* 读不到就用默认（奶油色） */ }
+        })();
+    </script>
 <script src="i18n-en.js"></script>
 <script src="i18n.js"></script>
 <!-- Konva 引擎：桌面版完全离线，只用同目录本地副本；缺失时顶部红色提示条 -->
@@ -18487,6 +18494,7 @@ window.addEventListener('DOMContentLoaded', function () {
             const b = n.getClientRect({ skipShadow: true, skipStroke: true });
             const o = { id: agentIdOf(n), type: agentType(n), role: agentRole(n), name: elementLabel(n), frame: f ? f.no : null,
                         z_index: n.zIndex(), visible: n.visible() };
+            if (n.getAttr('locked')) o.locked = true;                                  // 2026-11-02 契约：锁定状态要读得到
             const ref = String(n.getAttr('agentRefId') || '').trim();
             if (ref) o.ref_id = ref.slice(0, 128);
             if (f) {
@@ -18687,7 +18695,67 @@ window.addEventListener('DOMContentLoaded', function () {
                 } else if (g === null || !cols.length) n.setAttr('tintGradient', null);
             }
         }
-        // width / height = 占框短边的比例。形状给了 height 就宽高各算各的（压扁成色带 / 拉成竖条）；只给 width = 按长边等比
+        // ---- 2026-11-02 核心编辑契约第二组：锁定 / 主题 / 单框存模板（20 个工具共用）----
+        //   锁定：只挡 agent 的写入路径 + 画布上不给拖；解锁后一切照旧（界面没有锁的入口，只给 AI 用）
+        function agentSetLocked(n, locked) {
+            n.setAttr('locked', !!locked);
+            if (typeof n.draggable === 'function' && n.getClassName() !== 'Transformer') n.draggable(!locked);
+            if (locked && tr && tr.nodes().indexOf(n) >= 0) tr.nodes(tr.nodes().filter((x) => x !== n));
+            return !!locked;
+        }
+        function agentLockedNode(id) {
+            const n = agentNode(id);
+            return (n && n.getAttr('locked')) ? n : null;
+        }
+        function agentLockedError(n) {
+            return { ok: false, error: '元素「' + elementLabel(n) + '」已锁定：先 set_element_state {locked:false} 再改' };
+        }
+        // 主题：classic = 老主题；不设（或 cream）= 奶油色主题（同 --cream 判据口径）
+        const AGENT_THEME_KEY = 'cm_theme_v1';
+        function agentThemeGet() { return document.documentElement.getAttribute('data-theme') === 'classic' ? 'classic' : 'cream'; }
+        function agentThemeSet(t) {
+            const v = t === 'classic' ? 'classic' : 'cream';
+            document.documentElement.setAttribute('data-theme', v);
+            try { localStorage.setItem(AGENT_THEME_KEY, v); } catch (e) { /* 存不了就只管这一次 */ }
+            return v;
+        }
+        // 单框存模板：和面板「＋ 存为模板」同一套序列化（节点 / 图片 / 分层 / 缩略图），只是限定一块框
+        async function agentSaveFrameTemplate(f, name, overwrite) {
+            if (!tplAvailable()) return { ok: false, error: '保存模板要用桌面版打开（浏览器里没有存盘能力）' };
+            const list = (await window.coverApp.myTemplates.list()) || [];
+            const want = String(name || '').trim();
+            const same = list.find((x) => String(x.name || '').trim() === want);
+            if (same && !overwrite) return { ok: false, error: '已经有同名模板「' + want + '」（要覆盖请 overwrite: true）' };
+            const keep = tplNodesInFrame(f.gk);
+            const sk = splitKeyOf(f.gk);
+            const layers = tplLayersOf(f.gk, keep, f.rect.width, { x: f.rect.x, y: f.rect.y });
+            const nSub = layers.filter((L) => L.t === 'subject').length;
+            if (!keep.length && !sk && !nSub) return { ok: false, error: '这块框里没有文字 / 贴纸 / 主体，没东西可存（照片不进模板）' };
+            const data = tplSerialize(keep, { x: f.rect.x, y: f.rect.y });
+            if (same) { try { await window.coverApp.myTemplates.remove(same.id); } catch (e) { /* 删不掉就当新建 */ } }
+            const res = await window.coverApp.myTemplates.save({
+                name: want, thumb: tplFrameThumb(f.rect, keep, f.gk), kind: 'frame', ratio: f.ratio, ratioLabel: ratioLabelOf(f.ratio),
+                frame: { w: f.rect.width, h: f.rect.height }, canvas: { w: stage.width(), h: stage.height() },
+                nodes: data.nodes, images: data.images, split: sk || undefined,
+                layers: layers.some((L) => L.t !== 'n') ? layers : undefined
+            });
+            if (!res || !res.ok) return { ok: false, error: '保存模板失败：' + ((res && res.reason) || '未知原因') };
+            MYTPL.items = res.items || MYTPL.items;
+            renderMyTemplates();
+            return { ok: true, id: res.id, name: want, nodes: data.nodes.length, split: sk || null, subjects: nSub };
+        }
+        // 分块格子：rows/cols 从布局的格子起点推（不依赖布局名），idx 按行优先
+        function agentSplitCellIndex(gk, cell) {
+            const key = splitKeyOf(gk);
+            if (!key || !SPLIT_LAYOUTS[key]) return { err: '这块框没有分块，cell 参数用不上（先在软件里给框选一个分块样式）' };
+            const cells = SPLIT_LAYOUTS[key].cells;
+            const rows = cells.filter((c) => Math.abs(c[1]) < 1e-9).length || 1;
+            const cols = Math.max(1, Math.round(cells.length / rows));
+            const row = Math.max(1, Math.round(Number(cell.row) || 1)), col = Math.max(1, Math.round(Number(cell.column) || 1));
+            if (row > rows || col > cols) return { err: 'cell 超出分块范围（这块框分块是 ' + rows + ' 行 ' + cols + ' 列）' };
+            return { key: key, idx: (row - 1) * cols + (col - 1), rows: rows, cols: cols };
+        }
+
         function agentResize(n, f, width, height) {
             const short = Math.min(f.rect.width, f.rect.height);
             if (isShapeNode(n)) {
@@ -18975,12 +19043,285 @@ window.addEventListener('DOMContentLoaded', function () {
                 agentDone('图片贴纸 ' + imgFileName(p), n);
                 return agentResult(n);
             },
+            // ==================== 2026-11-02 核心编辑契约第二组（20 个工具）====================
+            // 元素状态：可见 / 锁定（锁定的元素连 agent 自己也不许绕过，要改先解锁）
+            set_element_state(a) {
+                const n = agentNode(a.id);
+                if (!n) return { ok: false, error: '没有这个 id：' + a.id + '（用 get_canvas 看）' };
+                if (a.visible == null && a.locked == null) return { ok: false, error: 'visible / locked 至少给一个' };
+                if (a.visible != null) n.visible(!!a.visible);
+                if (a.locked != null) agentSetLocked(n, !!a.locked);
+                pushHistory('AI 元素状态', null);
+                mainLayer.draw();
+                refreshLayers();
+                hintStatus('AI：' + elementLabel(n) + (a.locked != null ? (a.locked ? ' 已锁定' : ' 已解锁') : '') + (a.visible != null ? (a.visible ? ' 已显示' : ' 已隐藏') : ''));
+                return agentResult(n);
+            },
+            // 跨框复制：样式 / 相对位置照搬，落到目标框（多选整批只记一步撤销）
+            duplicate_elements(a) {
+                const fr = agentFrame(a.target_frame); if (fr.err) return { ok: false, error: fr.err };
+                const ids = (Array.isArray(a.ids) ? a.ids : []).map((x) => String(x || '').trim()).filter(Boolean);
+                if (!ids.length) return { ok: false, error: 'ids 不能是空的' };
+                const srcs = [];
+                for (const id of ids) {
+                    const n = agentNode(id);
+                    if (!n) return { ok: false, error: '没有这个 id：' + id + '（用 get_canvas 看）' };
+                    if (n.getAttr('locked')) return agentLockedError(n);
+                    srcs.push(n);
+                }
+                const f = fr.f, ox = Number(a.offset_x) || 0, oy = Number(a.offset_y) || 0;
+                const made = [];
+                srcs.forEach((src) => {
+                    const i0 = agentInfo(src);
+                    const c = src.clone();                                   // Konva 深拷贝（文字 / 贴纸 / 照片 / 路径都吃这一套）
+                    c.setAttr('aid', '');
+                    c.setAttr('locked', false);
+                    c.setAttr('stEditing', false);
+                    mainLayer.add(c);
+                    agentPlace(c, f, (i0.x == null ? 0.5 : i0.x) + ox, (i0.y == null ? 0.5 : i0.y) + oy);
+                    if (c.getAttr('fillFrame') != null) syncImageClipRectsNow();
+                    made.push(agentInfo(c));
+                });
+                tr.moveToTop();
+                pushHistory('AI 复制元素', null);
+                agentDone('复制 ' + made.length + ' 个元素到第 ' + f.no + ' 块框', null);
+                return { ok: true, elements: made };
+            },
+            // 照片重新取景：cover 进框 / 指定格，再按焦点 + 缩放挪裁剪窗口（原图不动、不重编码）
+            fit_image_to_frame(a) {
+                const n = agentNode(a.id);
+                if (!n) return { ok: false, error: '没有这个 id：' + a.id + '（用 get_canvas 看）' };
+                if (n.getClassName() !== 'Image' || isCutoutNode(n)) return { ok: false, error: '只能对照片取景（这个元素不是照片，或者已经是抠出来的主体）' };
+                if (n.getAttr('locked')) return agentLockedError(n);
+                if (a.mode != null && a.mode !== 'cover') return { ok: false, error: 'mode 只支持 cover' };
+                const i0 = agentInfo(n);
+                if (!i0.frame) return { ok: false, error: '这张照片不在任何框里' };
+                const fr = agentFrame(i0.frame); if (fr.err) return { ok: false, error: fr.err };
+                const f = fr.f;
+                let area = fillRectOf(f.rect), cellIdx = null;
+                if (a.cell) {
+                    const ci = agentSplitCellIndex(f.gk, a.cell);
+                    if (ci.err) return { ok: false, error: ci.err };
+                    const rs = splitCellRects(f.rect, ci.key);
+                    if (!rs || !rs[ci.idx]) return { ok: false, error: '这个格子不存在' };
+                    area = rs[ci.idx];
+                    cellIdx = ci.idx;
+                }
+                refitInto(n, area);                                          // cover（保比例铺满）
+                const zoom = Math.max(1, Math.min(20, Number(a.zoom) || 1));
+                const fx = a.focal_x == null ? 0.5 : Math.max(0, Math.min(1, Number(a.focal_x)));
+                const fy = a.focal_y == null ? 0.5 : Math.max(0, Math.min(1, Number(a.focal_y)));
+                if (zoom > 1) { n.width(Math.abs(n.width()) * zoom); n.height(Math.abs(n.height()) * zoom); }
+                if (zoom > 1 || fx !== 0.5 || fy !== 0.5) {                  // 焦点：0 = 贴左上，1 = 贴右下
+                    const dx = Math.max(0, Math.abs(n.width()) - area.width), dy = Math.max(0, Math.abs(n.height()) - area.height);
+                    n.x(area.x - dx * fx);
+                    n.y(area.y - dy * fy);
+                }
+                if (cellIdx != null) { n.setAttr('fillCell', cellIdx); n.setAttr('cellPref', cellIdx); }
+                refreshWarpAnchor(n);
+                syncImageClipRectsNow();
+                pushHistory('AI 重新取景', null);
+                agentDone('照片重新取景', n);
+                return Object.assign(agentResult(n), { area: { x: Math.round(area.x), y: Math.round(area.y), w: Math.round(area.width), h: Math.round(area.height) } });
+            },
+            // 非破坏性擦除：只往 eraseStrokes 里追加笔画（原图一个字节都不动），坐标 0~1
+            erase_element(a) {
+                const n = agentNode(a.id);
+                if (!n) return { ok: false, error: '没有这个 id：' + a.id + '（用 get_canvas 看）' };
+                if (n.getAttr('locked')) return agentLockedError(n);
+                if (!isErasable(n)) return { ok: false, error: '这个元素不能擦（文字 / 贴纸 / 照片才能擦）' };
+                const list = Array.isArray(a.strokes) ? a.strokes : [];
+                if (!list.length) return { ok: false, error: 'strokes 不能是空的' };
+                const photo = n.getClassName() === 'Image';
+                const w = Math.max(1, Math.abs(n.width())), h = Math.max(1, Math.abs(n.height()));
+                const add = [];
+                list.slice(0, 100).forEach((st) => {
+                    const pts = (Array.isArray(st && st.points) ? st.points : []).map((p) => [Number(p && p.x), Number(p && p.y)])
+                        .filter((p) => isFinite(p[0]) && isFinite(p[1]) && p[0] >= 0 && p[0] <= 1 && p[1] >= 0 && p[1] <= 1)
+                        .slice(0, 500);
+                    if (!pts.length) return;
+                    const size = Math.max(1, Math.min(500, Number(st && st.size) || 24));
+                    const flat = [];
+                    pts.forEach((p) => { flat.push(photo ? p[0] : p[0] * w, photo ? p[1] : p[1] * h); });
+                    add.push({ pts: flat, r: photo ? (size / 2) / w : size / 2, hard: 1, op: 1, norm: photo });
+                });
+                if (!add.length) return { ok: false, error: '每一笔至少要有 1 个 0~1 范围内的点（x / y 都是占元素宽高的比例）' };
+                const old = eraseStrokesOf(n) || [];
+                n.setAttr('eraseStrokes', old.concat(add));                   // ⚠ 只整体替换（撤销快照是浅拷贝 attrs）
+                pushHistory('AI 擦除', null);
+                mainLayer.draw();
+                hintStatus('AI：擦除 ' + add.length + ' 笔');
+                return { ok: true, added: add.length, total: old.length + add.length, element: agentInfo(n) };
+            },
+            clear_erase(a) {
+                const n = agentNode(a.id);
+                if (!n) return { ok: false, error: '没有这个 id：' + a.id + '（用 get_canvas 看）' };
+                if (n.getAttr('locked')) return agentLockedError(n);
+                const old = eraseStrokesOf(n);
+                if (!old) return { ok: true, cleared: 0 };
+                n.setAttr('eraseStrokes', undefined);
+                pushHistory('AI 清除擦除', null);
+                mainLayer.draw();
+                hintStatus('AI：已恢复完整原图');
+                return { ok: true, cleared: old.length, element: agentInfo(n) };
+            },
+            // 模板：读 / 存 / 改名 / 删 / 导入导出（导出导入走主进程，路径由 agent 给，不弹框）
+            async get_template(a) {
+                if (!tplAvailable()) return { ok: false, error: '读模板要用桌面版打开' };
+                const list = (await window.coverApp.myTemplates.list()) || [];
+                const id = a.id == null ? '' : String(a.id).trim(), nm = a.name == null ? '' : String(a.name).trim();
+                if (!id && !nm) return { ok: false, error: 'id / name 给一个' };
+                const t = list.find((x) => (id && String(x.id) === id) || (nm && String(x.name || '').trim() === nm));
+                if (!t) return { ok: false, error: '没找到模板：' + (nm || id) + '（用 list_templates 看有哪些）' };
+                const o = JSON.parse(JSON.stringify(t));
+                o.thumb = o.thumb ? '（缩略图文件已省略）' : '';
+                (o.images || []).forEach((im) => { if (im && im.src && im.src.data) im.src.data = '（内联图片数据已省略）'; });
+                return { ok: true, template: o };
+            },
+            async save_template(a) {
+                const fr = agentFrame(a.frame); if (fr.err) return { ok: false, error: fr.err };
+                const name = String(a.name || '').trim();
+                if (!name) return { ok: false, error: 'name 不能是空的' };
+                const r = await agentSaveFrameTemplate(fr.f, name, !!a.overwrite);
+                if (!r.ok) return r;
+                hintStatus('AI：存模板「' + name + '」');
+                return r;
+            },
+            async rename_template(a) {
+                if (!tplAvailable()) return { ok: false, error: '改模板名要用桌面版打开' };
+                const id = String(a.id || '').trim(), name = String(a.name || '').trim();
+                if (!id) return { ok: false, error: 'id 不能是空的' };
+                if (!name) return { ok: false, error: 'name 不能是空的' };
+                const list = (await window.coverApp.myTemplates.list()) || [];
+                if (!list.some((x) => String(x.id) === id)) return { ok: false, error: '没找到模板：' + id + '（用 list_templates 看）' };
+                if (list.some((x) => String(x.id) !== id && String(x.name || '').trim() === name)) {
+                    return { ok: false, error: '已经有同名模板「' + name + '」：换个名字，或先把那个删掉' };
+                }
+                const res = await window.coverApp.myTemplates.rename(id, name);
+                MYTPL.items = (res && res.items) || MYTPL.items;
+                renderMyTemplates();
+                return { ok: !(res && res.ok === false), id: id, name: name };
+            },
+            async delete_template(a) {
+                if (!tplAvailable()) return { ok: false, error: '删模板要用桌面版打开' };
+                if (a.confirm !== true) return { ok: false, error: '删模板必须 confirm: true（永久删除，缩略图和随模板存的图片一起删）' };
+                const id = String(a.id || '').trim();
+                if (!id) return { ok: false, error: 'id 不能是空的' };
+                const res = await window.coverApp.myTemplates.remove(id);
+                MYTPL.items = (res && res.items) || MYTPL.items;
+                renderMyTemplates();
+                if (!res || !res.ok) return { ok: false, error: '没找到模板：' + id };
+                return { ok: true, deleted: id };
+            },
+            async import_templates(a) {
+                if (!tplAvailable()) return { ok: false, error: '导入模板要用桌面版打开' };
+                const p = String(a.path || '').trim();
+                if (!p) return { ok: false, error: 'path 不能是空的（.cmtpl 的绝对路径）' };
+                const r = await window.coverApp.myTemplates.importPack({ path: p, conflict: a.conflict || 'skip' });
+                if (!r || !r.ok) return { ok: false, error: (r && r.reason) || '导入失败' };
+                MYTPL.items = r.items || MYTPL.items;
+                renderMyTemplates();
+                hintStatus('AI：导入 ' + ((r.added || []).length) + ' 个模板');
+                return { ok: true, file: r.file, added: r.added || [], skipped: r.skipped || [], fonts: r.fonts || null };
+            },
+            async export_template(a) {
+                if (!tplAvailable()) return { ok: false, error: '导出模板要用桌面版打开' };
+                const id = String(a.id || '').trim(), p = String(a.path || '').trim();
+                if (!id) return { ok: false, error: 'id 不能是空的' };
+                if (!p) return { ok: false, error: 'path 不能是空的（导出到哪个绝对路径）' };
+                const r = await window.coverApp.myTemplates.exportPack([id], { path: p, overwrite: !!a.overwrite });
+                if (!r || !r.ok) return { ok: false, error: (r && r.reason) || '导出失败' };
+                return { ok: true, file: r.file, name: r.name, templates: r.templates, images: r.images, missing: r.missing || [] };
+            },
+            async export_templates(a) {
+                if (!tplAvailable()) return { ok: false, error: '导出模板要用桌面版打开' };
+                const ids = (Array.isArray(a.ids) ? a.ids : []).map((x) => String(x || '').trim()).filter(Boolean);
+                if (!ids.length) return { ok: false, error: 'ids 不能是空的' };
+                const p = String(a.path || '').trim();
+                if (!p) return { ok: false, error: 'path 不能是空的（导出到哪个绝对路径）' };
+                const r = await window.coverApp.myTemplates.exportPack(ids, { path: p, overwrite: !!a.overwrite });
+                if (!r || !r.ok) return { ok: false, error: (r && r.reason) || '导出失败' };
+                return { ok: true, file: r.file, name: r.name, templates: r.templates, images: r.images, missing: r.missing || [] };
+            },
+            // 参考线：prefs 用 GUIDE.prefs（本机 cm_guidePrefs_v1），线用 GUIDE.list（{axis, fk, t}）
+            get_guides() {
+                const fs = agentFrames();
+                return { ok: true,
+                    preferences: { show: !!GUIDE.prefs.show, snap: !!GUIDE.prefs.snap, lock: !!GUIDE.prefs.lock, rulers: !!GUIDE.prefs.rulers, smart: !!GUIDE.prefs.smart },
+                    frames: fs.map((f) => ({ no: f.no, ratio: f.ratio })),
+                    guides: GUIDE.list.map((g) => ({ id: String(g.id), orientation: g.axis === 'v' ? 'vertical' : 'horizontal',
+                        frame: g.fk ? (fs.find((x) => x.gk === g.fk) || {}).no || null : null, ratio: agentRound4(g.t) })) };
+            },
+            set_guide_preferences(a) {
+                if (a.show == null && a.snap == null && a.lock == null) return { ok: false, error: 'show / snap / lock 至少给一个' };
+                ['show', 'snap', 'lock'].forEach((k) => { if (a[k] != null) GUIDE.prefs[k] = !!a[k]; });
+                gdSavePrefs();
+                gdRedraw();
+                return { ok: true, preferences: { show: !!GUIDE.prefs.show, snap: !!GUIDE.prefs.snap, lock: !!GUIDE.prefs.lock } };
+            },
+            add_guide(a) {
+                if (GUIDE.prefs.lock) return { ok: false, error: '参考线已锁定：先 set_guide_preferences {lock:false} 再加' };
+                const orientation = a.orientation === 'vertical' ? 'vertical' : 'horizontal';
+                if (a.orientation !== 'vertical' && a.orientation !== 'horizontal') return { ok: false, error: 'orientation 只能是 vertical / horizontal' };
+                const axis = orientation === 'vertical' ? 'v' : 'h';
+                let fk = null, t = null, frameNo = null;
+                if (a.frame != null && a.frame_ratio != null) {
+                    const fr = agentFrame(a.frame); if (fr.err) return { ok: false, error: fr.err };
+                    fk = fr.f.gk; frameNo = fr.f.no;
+                    const r = Number(a.frame_ratio);
+                    if (!isFinite(r) || r < 0 || r > 1) return { ok: false, error: 'frame_ratio 要在 0~1 之间' };
+                    t = r;
+                } else if (a.canvas_px != null) {
+                    const px = Number(a.canvas_px);
+                    if (!isFinite(px) || px < 0) return { ok: false, error: 'canvas_px 要 ≥ 0' };
+                    t = px / Math.max(1, axis === 'v' ? stage.width() : stage.height());
+                } else return { ok: false, error: '要么给 canvas_px，要么给 frame + frame_ratio' };
+                const g = gdAdd(axis, fk, Math.max(0, Math.min(1, t)));
+                gdRedraw();
+                hintStatus('AI：加了一条' + (orientation === 'vertical' ? '竖' : '横') + '参考线');
+                return { ok: true, guide: { id: String(g.id), orientation: orientation, frame: frameNo, ratio: agentRound4(g.t) } };
+            },
+            remove_guide(a) {
+                if (GUIDE.prefs.lock) return { ok: false, error: '参考线已锁定：先 set_guide_preferences {lock:false} 再删' };
+                const id = String(a.id == null ? '' : a.id).trim();
+                const i = GUIDE.list.findIndex((g) => String(g.id) === id);
+                if (i < 0) return { ok: false, error: '没有这条参考线：' + id + '（用 get_guides 看）' };
+                GUIDE.list.splice(i, 1);
+                gdRedraw();
+                return { ok: true, removed: id };
+            },
+            clear_guides(a) {
+                if (a.confirm !== true) return { ok: false, error: '清空参考线必须 confirm: true' };
+                if (GUIDE.prefs.lock) return { ok: false, error: '参考线已锁定：先 set_guide_preferences {lock:false} 再清空' };
+                const n = GUIDE.list.length;
+                GUIDE.list.length = 0;
+                gdRedraw();
+                return { ok: true, cleared: n };
+            },
+            // 应用设置：主题（cream / classic）+ 界面语言（zh / en）
+            get_app_settings() {
+                return { ok: true, theme: agentThemeGet(), language: (window.CMI18N && window.CMI18N.lang) || 'zh',
+                         themes_available: ['cream', 'classic'], languages_available: ['zh', 'en'] };
+            },
+            set_theme(a) {
+                if (a.theme !== 'cream' && a.theme !== 'classic') return { ok: false, error: 'theme 只能是 cream（奶油色）/ classic（老主题）' };
+                const v = agentThemeSet(a.theme);
+                hintStatus('AI：主题 → ' + (v === 'classic' ? '老主题' : '奶油色'));
+                return { ok: true, theme: v };
+            },
+            async set_language(a) {
+                if (a.language !== 'zh' && a.language !== 'en') return { ok: false, error: 'language 只能是 zh / en' };
+                if (window.CMI18N && window.CMI18N.setLang) await window.CMI18N.setLang(a.language);
+                return { ok: true, language: a.language, need_reload: true,
+                         note: '界面文字已经换了；菜单栏那部分要重新打开软件才全生效' };
+            },
             // 2026-11-02 用户「用 agent 控制说文字的斜切没有接口」：给 AI 补上斜切（skew_x / skew_y，单位度）
             //   跟画布上「右键 → 斜切」拖四边中点同一套 attr；斜切以节点左上角为原点，会让整块外框位移 →
             //   这里按外框中心回补一次（同上面 rotation 的做法），x / y 仍旧是「中心点占框的比例」，模型不用自己算漂移。
             update_element(a) {
                 const n = agentNode(a.id);
                 if (!n) return { ok: false, error: '没有这个 id：' + a.id + '（用 get_canvas 看）' };
+                if (n.getAttr('locked')) return agentLockedError(n);          // 2026-11-02：锁定的不许绕过去改
                 const t = agentType(n);
                 let f = null;
                 if (a.frame != null || a.x != null || a.y != null || a.width != null || a.height != null) {
@@ -19054,6 +19395,7 @@ window.addEventListener('DOMContentLoaded', function () {
                 else {
                     const n = agentNode(a.id);
                     if (!n) return { ok: false, error: '没有这个 id：' + a.id };
+                    if (n.getAttr('locked')) return agentLockedError(n);      // 2026-11-02：锁定的不许删
                     gone = [n];
                 }
                 const ids = gone.map((n) => agentIdOf(n));
