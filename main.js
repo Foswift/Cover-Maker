@@ -980,13 +980,22 @@ function registerMyTemplateIpc() {
             if (!FONT_FILE_EXT_RE.test('x' + ext)) { pack.missing.push('字体「' + fam + '」的文件（不是 ttf/otf/ttc）'); continue; }
             pack.fonts.push({ family: fam, name: path.basename(String(file)), ext: ext, b64: b });
         }
+        // 2026-11-02 用户「导出的文件名就是模板名」：单个 → 直接用模板名；多个 → 「第一个名字 等N个」
+        //   （Windows 文件名不许的字符换成空格，去掉首尾的点和空格，最长 60 字；取不到名字才退「封面模板」）
+        const safeName = (s) => String(s || '')
+            .replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .replace(/^[. ]+|[. ]+$/g, '')
+            .slice(0, 60)
+            .trim() || '封面模板';
+        const fileNameBase = safeName(pack.templates.length === 1 ? String(pack.templates[0].name || '')
+            : String((pack.templates[0] || {}).name || '') + ' 等' + pack.templates.length + '个');
         let outFile = String(process.env.CM_TPL_PACK_OUT || '').trim()
             || ((process.argv.find((a) => a.startsWith('--tplpackout=')) || '').slice('--tplpackout='.length));
         if (!outFile) {
-            const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '').replace(/-/g, '');
             const r = await dialog.showSaveDialog(liveWin() || undefined, {
                 title: '导出模板（可以发给别人）',
-                defaultPath: 'cover-template-' + stamp + '.cmtpl',
+                defaultPath: fileNameBase + '.cmtpl',
                 filters: [{ name: '封面制作器模板', extensions: ['cmtpl'] }]
             });
             if (r.canceled || !r.filePath) return { ok: false, canceled: true, reason: '已取消' };
@@ -1001,7 +1010,7 @@ function registerMyTemplateIpc() {
         console.log('[cover-maker] mytpl: 导出 ' + pack.templates.length + ' 个模板 → ' + outFile
             + '（图片 ' + pack.templates.reduce((n, t) => n + (t.filePack || []).length, 0) + ' 个'
             + (pack.missing.length ? '，缺 ' + pack.missing.length + ' 个文件' : '') + '）');
-        return { ok: true, file: outFile, templates: pack.templates.length,
+        return { ok: true, file: outFile, name: fileNameBase, templates: pack.templates.length,
                  images: pack.templates.reduce((n, t) => n + (t.filePack || []).length, 0), missing: pack.missing };
     });
 
@@ -14058,14 +14067,25 @@ function createWindow() {
                         const sv = await saveAsTemplate();
                         out.saved = sv && sv.ok ? (sv.saved || []).length : 0;
                         out.savedId = (sv && sv.ok && sv.saved && sv.saved[0] && sv.saved[0].id) || '';
+                        out.savedName = (sv && sv.ok && sv.saved && sv.saved[0] && sv.saved[0].name) || '';
                         window.__cmTplIoSavedId = out.savedId;
                         out.saveReason = (sv && sv.reason) || '';
                         out.afterSave = MYTPL.items.length;
                         // 单张导出（2026-11-02 用户「要能够单独导出，也可以批量导出」）：只给一个 id → 包里只有 1 个模板
                         const exOne = await window.coverApp.myTemplates.exportPack(out.savedId ? [out.savedId] : []);
-                        out.exportOne = exOne ? { ok: !!exOne.ok, templates: exOne.templates || 0 } : null;
+                        out.exportOne = exOne ? { ok: !!exOne.ok, templates: exOne.templates || 0, name: exOne.name || '', file: exOne.file || '' } : null;
+                        // 2026-11-02：再存一个模板 → 批量导出的文件名应该是「第一个名字 等N个」
+                        const f1 = frames[1] || frames[0], c1 = contentRect(f1.rect);
+                        const tx2 = makeTextNode(c1.x + 10, c1.y + 30); tx2.text('第二个模板'); tx2.setAttr('fillFrame', f1.gk); mainLayer.add(tx2);
+                        mainLayer.draw(); refreshLayers();
+                        const sv2 = await saveAsTemplate();
+                        out.saved2 = sv2 && sv2.ok ? (sv2.saved || []).length : 0;
+                        window.__cmTplIoSavedIds = (((sv2 && sv2.ok && sv2.saved) || []).map(function (x) { return x.id; })).concat(out.savedId ? [out.savedId] : []);
+                        out.afterSave2 = MYTPL.items.length;
+                        const ex2 = await window.coverApp.myTemplates.exportPack([]);
+                        out.export2 = ex2 ? { ok: !!ex2.ok, name: ex2.name || '', templates: ex2.templates || 0, images: ex2.images || 0 } : null;
                         const ex = await window.coverApp.myTemplates.exportPack([]);
-                        out.export = ex ? { ok: !!ex.ok, file: ex.file || '', templates: ex.templates || 0, images: ex.images || 0,
+                        out.export = ex ? { ok: !!ex.ok, file: ex.file || '', name: ex.name || '', templates: ex.templates || 0, images: ex.images || 0,
                                             missing: (ex.missing || []).length, reason: ex.reason || '' } : null;
                         const im1 = await window.coverApp.myTemplates.importPack();
                         out.import1 = im1 ? { ok: !!im1.ok, added: (im1.added || []).slice(), reason: im1.reason || '',
@@ -14146,7 +14166,7 @@ function createWindow() {
                     const cleanup = await js(`(async function () {
                         MYTPL.items = (await window.coverApp.myTemplates.list()) || MYTPL.items;
                         const ids = MYTPL.items.filter(function (x) { return String(x.name || '').indexOf('（收到') >= 0; }).map(function (x) { return x.id; });
-                        if (window.__cmTplIoSavedId) ids.push(window.__cmTplIoSavedId);
+                        (window.__cmTplIoSavedIds || (window.__cmTplIoSavedId ? [window.__cmTplIoSavedId] : [])).forEach(function (id) { if (id && ids.indexOf(id) < 0) ids.push(id); });
                         for (const id of ids) { try { await window.coverApp.myTemplates.remove(id); } catch (e) {} }
                         MYTPL.items = (await window.coverApp.myTemplates.list()) || [];
                         renderMyTemplates();
@@ -14157,17 +14177,21 @@ function createWindow() {
                         mainLayer.draw(); refreshLayers(); window.__cmHistoryReset();
                         return { left: MYTPL.items.length, deleted: ids.length };
                     })()`);
-                    const p1 = res.frames >= 2 && res.saved === 1 && !!res.export && res.export.ok
-                        && res.export.templates === res.afterSave && res.export.images >= 1
-                        && !!res.exportOne && res.exportOne.ok && res.exportOne.templates === 1;   // 单张导出只带 1 个
-                    const p2 = !!t0 && String(t0.thumb || '') === '' && String(t0._thumbB64 || '').length > 500
-                        && (t0.filePack || []).length >= 1 && String(((t0.filePack || [])[0] || {}).b64 || '').length > 100
+                    const p1 = res.frames >= 2 && res.saved === 1 && res.saved2 >= 1 && !!res.export2 && res.export2.ok
+                        && res.export2.templates === res.afterSave2 && res.export2.images >= 1        // 批量导出带全部 + 图片
+                        && !!res.exportOne && res.exportOne.ok && res.exportOne.templates === 1      // 单张导出只带 1 个
+                        && res.exportOne.name === res.savedName                                      // 文件名 = 模板名
+                        && res.export2.templates >= 2 && String(res.export2.name).indexOf('等') >= 0;  // 多个 → 「第一个名字 等N个」
+                    // 现在包里不止一个模板（第二个只有文字、没有贴纸图）→ 找一个**带图片**的来量
+                    const tImg = (pack && Array.isArray(pack.templates) ? pack.templates.filter((x) => (x.filePack || []).length >= 1)[0] : null) || t0;
+                    const p2 = !!tImg && String(tImg.thumb || '') === '' && String(tImg._thumbB64 || '').length > 500
+                        && (tImg.filePack || []).length >= 1 && String(((tImg.filePack || [])[0] || {}).b64 || '').length > 100
                         && Array.isArray(pack.fonts) && pack.fonts.length >= 1 && String((pack.fonts[0] || {}).b64 || '').length > 1000
                         && packTxt.indexOf('AppData') < 0 && packTxt.indexOf('Users\\\\') < 0;
                     const p2b = !!fontAfter1 && fontAfter1.recs >= 1 && fontAfter1.miss.length === 0;
                     const p3parts = {
                         imported: !!(res.import1 && res.import1.ok),
-                        count: res.afterImport === res.afterSave + res.export.templates,
+                        count: res.afterImport === res.afterSave2 + res.export2.templates,
                         rec: !!res.newRec, named: !!(res.newRec && res.newRec.name.indexOf('（收到') >= 0),
                         newId: !!t0 && !!res.newRec && res.newRec.id !== t0.id,
                         thumbFile: diskThumb,
