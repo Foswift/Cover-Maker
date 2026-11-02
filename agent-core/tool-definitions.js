@@ -43,6 +43,53 @@ const GRADIENT = {
   }
 };
 
+const LETTER_SPACING = { type: 'number', minimum: -20, maximum: 100, description: '字间距（像素，负数收紧、正数拉开）' };
+const STROKE_MODE = { type: 'string', enum: ['outer', 'inner'], description: '描边位置：outer 外描边，inner 内描边' };
+const CORNER_RADIUS = {
+  anyOf: [
+    { type: 'number', minimum: 0 },
+    { type: 'array', minItems: 4, maxItems: 4, items: { type: 'number', minimum: 0 } }
+  ],
+  description: '圆角半径：一个数字统一设置；或按左上、右上、右下、左下传固定四项数组'
+};
+const LINE_POINTS = {
+  type: 'object',
+  description: '线条三个点（坐标是形状自身 0~1 的比例）：start / end = 两头端点，bend = 曲线经过的弯曲点（直线就放在两头中点）',
+  properties: {
+    start: { type: 'object', properties: { x: { type: 'number', minimum: 0, maximum: 1 }, y: { type: 'number', minimum: 0, maximum: 1 } }, required: ['x', 'y'] },
+    bend: { type: 'object', properties: { x: { type: 'number', minimum: 0, maximum: 1 }, y: { type: 'number', minimum: 0, maximum: 1 } }, required: ['x', 'y'] },
+    end: { type: 'object', properties: { x: { type: 'number', minimum: 0, maximum: 1 }, y: { type: 'number', minimum: 0, maximum: 1 } }, required: ['x', 'y'] }
+  },
+  required: ['start', 'bend', 'end']
+};
+const BUBBLE_TAIL = {
+  type: 'object',
+  description: '气泡尾巴：tip_x / tip_y = 尖端位置（相对气泡的比例，可超出 0~1 指到外面）；width = 尾巴根部宽度（0~100 同尖端坐标系）',
+  properties: {
+    tip_x: { type: 'number', minimum: -1, maximum: 2 },
+    tip_y: { type: 'number', minimum: -1, maximum: 2 },
+    width: { type: 'number', minimum: 2, maximum: 100 }
+  },
+  required: ['tip_x', 'tip_y']
+};
+const WARP_QUAD = {
+  anyOf: [
+    {
+      type: 'object',
+      description: '四角透视变形；坐标是元素局部范围内的比例',
+      properties: {
+        top_left: { type: 'object', properties: POS, required: ['x', 'y'] },
+        top_right: { type: 'object', properties: POS, required: ['x', 'y'] },
+        bottom_right: { type: 'object', properties: POS, required: ['x', 'y'] },
+        bottom_left: { type: 'object', properties: POS, required: ['x', 'y'] }
+      },
+      required: ['top_left', 'top_right', 'bottom_right', 'bottom_left']
+    },
+    { type: 'null' }
+  ],
+  description: '设置四角透视变形；传 null 清除变形'
+};
+
 // create_cover 的自定义风格（用户 2026-10-21「先做第 1 条」）：agent 看完参考图，把看到的配色 / 版式填进来；没填的用 style 选中的预设
 const CUSTOM_STYLE = {
   type: 'object',
@@ -121,6 +168,9 @@ const TOOLS = [
         align: { type: 'string', enum: ['left', 'center', 'right'], description: '多行文字的对齐（默认左对齐；居中排的标题用 center）' },
         opacity: TEXT_OPACITY,
         gradient: GRADIENT,
+        letter_spacing: LETTER_SPACING,
+        stroke_mode: STROKE_MODE,
+        stroke_gradient: GRADIENT,
         ...SKEW
       }),
       required: ['text']
@@ -146,6 +196,9 @@ const TOOLS = [
         },
         shadow: SHADOW,
         opacity: OPACITY,
+        corner_radius: CORNER_RADIUS,
+        line_points: LINE_POINTS,
+        bubble_tail: BUBBLE_TAIL,
         ...SKEW
       }),
       required: ['shape']
@@ -182,6 +235,15 @@ const TOOLS = [
         to_back: { type: 'boolean', description: 'true = 移到最下层（比如把新加的背景色块垫到底）' },
         opacity: { type: 'number', minimum: 0, maximum: 1, description: '不透明度（0~1）。文字 = 只淡字本身（同右栏「字透明度」）；形状 / 贴纸 / 照片 = 整个元素' },
         gradient: GRADIENT,
+        letter_spacing: LETTER_SPACING,
+        stroke_mode: STROKE_MODE,
+        stroke_gradient: GRADIENT,
+        tint: Object.assign({ description: '图片贴纸的纯色色调；单独修改会取消色调渐变' }, HEX),
+        tint_gradient: GRADIENT,
+        corner_radius: CORNER_RADIUS,
+        line_points: LINE_POINTS,
+        bubble_tail: BUBBLE_TAIL,
+        warp_quad: WARP_QUAD,
         ...SKEW
       }),
       required: ['id']
@@ -283,6 +345,299 @@ const TOOLS = [
     description: '导出封面图片：每块框按平台标准尺寸各导一张 PNG（白底），写到指定文件夹，返回文件路径。',
     annotations: DESTRUCTIVE_IDEMPOTENT,
     inputSchema: { type: 'object', properties: { dir: { type: 'string', description: '导出到哪个文件夹（绝对路径；不写 = 图片/封面制作器导出）' } } }
+  },
+  {
+    name: 'add_sticker_image',
+    description: '从本机导入一张图片作为可缩放、可着色的图片贴纸；与 add_sticker 的 emoji 贴纸不同。',
+    annotations: WRITE,
+    inputSchema: {
+      type: 'object',
+      properties: Object.assign({
+        path: { type: 'string', minLength: 1, description: '图片文件的绝对路径（png / jpg / webp / gif）' },
+        frame: FRAME
+      }, POS, {
+        width: { type: 'number', minimum: 0.01, maximum: 2, description: '贴纸宽度占框短边的比例' },
+        tint: Object.assign({ description: '纯色色调；不写则保留原图颜色' }, HEX),
+        tint_gradient: GRADIENT,
+        opacity: OPACITY
+      }),
+      required: ['path']
+    }
+  },
+  {
+    name: 'set_element_state',
+    description: '设置元素可见或锁定状态。锁定的元素不能通过本工具或其他 Agent 工具强制绕过；要修改前先明确解锁。',
+    annotations: WRITE_IDEMPOTENT,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', minLength: 1 },
+        visible: { type: 'boolean' },
+        locked: { type: 'boolean' }
+      },
+      required: ['id']
+    }
+  },
+  {
+    name: 'duplicate_elements',
+    description: '把一个或多个未锁定元素复制到指定框，保留样式和相对位置。',
+    annotations: WRITE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', minItems: 1, maxItems: 100, uniqueItems: true, items: { type: 'string', minLength: 1 } },
+        target_frame: FRAME,
+        offset_x: { type: 'number', minimum: -1, maximum: 1, description: '横向偏移，占目标框宽的比例' },
+        offset_y: { type: 'number', minimum: -1, maximum: 1, description: '纵向偏移，占目标框高的比例' }
+      },
+      required: ['ids', 'target_frame']
+    }
+  },
+  {
+    name: 'fit_image_to_frame',
+    description: '把已有图片在框或网格单元中以 cover 方式非破坏性重新取景；只改裁剪窗口、焦点与缩放，不删除或改写原图。',
+    annotations: WRITE_IDEMPOTENT,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', minLength: 1 },
+        mode: { type: 'string', enum: ['cover'], default: 'cover' },
+        focal_x: { type: 'number', minimum: 0, maximum: 1 },
+        focal_y: { type: 'number', minimum: 0, maximum: 1 },
+        zoom: { type: 'number', minimum: 1, maximum: 20 },
+        cell: {
+          type: 'object',
+          description: '可选网格单元，行列从 1 开始',
+          properties: {
+            row: { type: 'integer', minimum: 1 },
+            column: { type: 'integer', minimum: 1 }
+          },
+          required: ['row', 'column']
+        }
+      },
+      required: ['id']
+    }
+  },
+  {
+    name: 'erase_element',
+    description: '给图片元素追加非破坏性擦除笔画；原始图片数据不变，可用 clear_erase 清除蒙版。',
+    annotations: WRITE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', minLength: 1 },
+        strokes: {
+          type: 'array', minItems: 1, maxItems: 100,
+          items: {
+            type: 'object',
+            properties: {
+              points: {
+                type: 'array', minItems: 1, maxItems: 500,
+                items: {
+                  type: 'object',
+                  properties: {
+                    x: { type: 'number', minimum: 0, maximum: 1 },
+                    y: { type: 'number', minimum: 0, maximum: 1 }
+                  },
+                  required: ['x', 'y']
+                }
+              },
+              size: { type: 'number', minimum: 1, maximum: 500, description: '画笔直径（像素）' }
+            },
+            required: ['points', 'size']
+          }
+        }
+      },
+      required: ['id', 'strokes']
+    }
+  },
+  {
+    name: 'clear_erase',
+    description: '清除图片元素的非破坏性擦除蒙版，恢复完整原图。',
+    annotations: WRITE_IDEMPOTENT,
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string', minLength: 1 } },
+      required: ['id']
+    }
+  },
+  {
+    name: 'get_template',
+    description: '按 id 或名字读取一个已保存模板的完整定义，不修改模板或画布。',
+    annotations: READ,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        name: { type: 'string' }
+      },
+      anyOf: [{ required: ['id'] }, { required: ['name'] }]
+    }
+  },
+  {
+    name: 'save_template',
+    description: '把指定框保存为新模板；同名模板默认不覆盖。',
+    annotations: WRITE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', minLength: 1, maxLength: 100 },
+        frame: FRAME,
+        overwrite: { type: 'boolean', default: false, description: '只有用户明确要求时才设 true' }
+      },
+      required: ['name', 'frame']
+    }
+  },
+  {
+    name: 'rename_template',
+    description: '重命名模板；若目标名字已存在则默认不覆盖。',
+    annotations: WRITE_IDEMPOTENT,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', minLength: 1 },
+        name: { type: 'string', minLength: 1, maxLength: 100 }
+      },
+      required: ['id', 'name']
+    }
+  },
+  {
+    name: 'delete_template',
+    description: '永久删除一个模板；必须由调用方明确确认。',
+    annotations: DESTRUCTIVE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', minLength: 1 },
+        confirm: { type: 'boolean', const: true }
+      },
+      required: ['id', 'confirm']
+    }
+  },
+  {
+    name: 'import_templates',
+    description: '从绝对路径导入模板包；遇到同 id 或同名模板时默认跳过，不覆盖现有模板。',
+    annotations: WRITE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', minLength: 1, description: '模板包文件的绝对路径' },
+        conflict: { type: 'string', enum: ['skip', 'rename', 'overwrite'], default: 'skip' }
+      },
+      required: ['path']
+    }
+  },
+  {
+    name: 'export_template',
+    description: '把一个模板写到指定绝对路径；文件已存在时默认不覆盖。写文件属于破坏性外部操作。',
+    annotations: DESTRUCTIVE_IDEMPOTENT,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', minLength: 1 },
+        path: { type: 'string', minLength: 1, description: '导出文件的绝对路径' },
+        overwrite: { type: 'boolean', default: false }
+      },
+      required: ['id', 'path']
+    }
+  },
+  {
+    name: 'export_templates',
+    description: '把多个模板写成一个模板包到指定绝对路径；文件已存在时默认不覆盖。写文件属于破坏性外部操作。',
+    annotations: DESTRUCTIVE_IDEMPOTENT,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', minItems: 1, maxItems: 100, uniqueItems: true, items: { type: 'string', minLength: 1 } },
+        path: { type: 'string', minLength: 1, description: '导出文件的绝对路径' },
+        overwrite: { type: 'boolean', default: false }
+      },
+      required: ['ids', 'path']
+    }
+  },
+  {
+    name: 'get_guides',
+    description: '读取参考线、显示/吸附/锁定偏好和各框中的相对位置。',
+    annotations: READ,
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'set_guide_preferences',
+    description: '设置参考线的显示、吸附和锁定偏好。锁定后不能强制绕过；移动或删除前应先解锁。',
+    annotations: WRITE_IDEMPOTENT,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        show: { type: 'boolean' },
+        snap: { type: 'boolean' },
+        lock: { type: 'boolean' }
+      }
+    }
+  },
+  {
+    name: 'add_guide',
+    description: '添加水平或垂直参考线。位置二选一：整张画布像素位置，或框编号加框内比例。',
+    annotations: WRITE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        orientation: { type: 'string', enum: ['horizontal', 'vertical'] },
+        canvas_px: { type: 'number', minimum: 0, description: '相对整张画布左边或顶边的像素位置' },
+        frame: FRAME,
+        frame_ratio: { type: 'number', minimum: 0, maximum: 1, description: '相对指定框宽或高的位置比例' }
+      },
+      required: ['orientation'],
+      anyOf: [
+        { required: ['canvas_px'] },
+        { required: ['frame', 'frame_ratio'] }
+      ]
+    }
+  },
+  {
+    name: 'remove_guide',
+    description: '删除一条未锁定的参考线；锁定时不提供 force 绕过。',
+    annotations: WRITE,
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string', minLength: 1 } },
+      required: ['id']
+    }
+  },
+  {
+    name: 'clear_guides',
+    description: '清空全部未锁定参考线；必须明确确认，且不会用 force 绕过锁定。',
+    annotations: DESTRUCTIVE,
+    inputSchema: {
+      type: 'object',
+      properties: { confirm: { type: 'boolean', const: true } },
+      required: ['confirm']
+    }
+  },
+  {
+    name: 'get_app_settings',
+    description: '读取应用当前主题与语言设置。',
+    annotations: READ,
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'set_theme',
+    description: '切换应用主题。',
+    annotations: WRITE_IDEMPOTENT,
+    inputSchema: {
+      type: 'object',
+      properties: { theme: { type: 'string', enum: ['cream', 'classic'] } },
+      required: ['theme']
+    }
+  },
+  {
+    name: 'set_language',
+    description: '切换应用界面语言；保存设置后需要 reload（重新加载）应用才能让所有界面生效。',
+    annotations: WRITE_IDEMPOTENT,
+    inputSchema: {
+      type: 'object',
+      properties: { language: { type: 'string', enum: ['zh', 'en'] } },
+      required: ['language']
+    }
   },
   {
     name: 'create_cover',

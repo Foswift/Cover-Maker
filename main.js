@@ -6955,7 +6955,7 @@ function createWindow() {
                     const okM = [];
                     if (!M.端口) okM.push('端口');
                     if (M.没令牌 !== 401 || M.外站 !== 403) okM.push('鉴权');
-                    if (M.初始化 !== '2025-06-18' || M.通知 !== 202 || M.工具数 !== 22) okM.push('协议');      // M249 + set_layer_order
+                    if (M.初始化 !== '2025-06-18' || M.通知 !== 202 || M.工具数 !== require('./agent-core/tool-definitions').TOOLS.length) okM.push('协议');   // 工具数跟着共享定义走（原来写死 22，扩工具时会假红）
                     if (!M.初始化主体规则 || !M.说明主体规则) okM.push('主体遮挡规则');
                     if (!M.初始化字体规则 || !M.说明字体规则) okM.push('参考图字体规则');
                     if (M.平台 !== '1:3:4,2:4:3') okM.push('平台');
@@ -13962,22 +13962,27 @@ function createWindow() {
                             var wasOff = !!(row && row.classList.contains('ct-off'));
                             if (wasOff) row.classList.remove('ct-off');
                             var d = row && row.querySelector('.angle-dial'), i = row && row.querySelector('.tp-grad-ang');
-                            var sw = row && row.querySelector('.tp-grad-sw');
+                            var sw = row && row.querySelector('.tp-grad-sw'), sws = row && row.querySelectorAll('.tp-grad-sw'), sw2 = sws && sws[1];
                             var mid = function (el) { var r = el && el.getBoundingClientRect(); return r ? Math.round(r.top + r.height / 2) : null; };
+                            var xw = function (el) { var r = el && el.getBoundingClientRect(); return r ? [Math.round(r.left), Math.round(r.width)] : [null, null]; };
                             o[k] = row ? { 有盘: !!d, 有框: !!i, 值: i && i.value, 压暗: !!(d && d.classList.contains('dim')),
                                            标签去掉: !row.querySelector('.prop-label + .prop-label') && !row.querySelector('.tp-gradang-row') && !!row.querySelector('.tp-grad-sw') && d.parentElement === row && i.parentElement === row,
                                            同一排: !!(sw && d && i) && d.parentElement === row && i.parentElement === row
                                                    && Math.abs(mid(sw) - mid(d)) <= 6 && Math.abs(mid(d) - mid(i)) <= 6,
                                            不溢出: row.clientWidth > 0 && row.scrollWidth <= row.clientWidth + 2,
-                                           y: { 色块: mid(sw), 盘: mid(d), 框: mid(i) }, w: [row.clientWidth, row.scrollWidth] } : null;
+                                           y: { 色块: mid(sw), 盘: mid(d), 框: mid(i) }, xw: xw(i), 框高: i ? Math.round(i.getBoundingClientRect().height) : null,
+                                           盘XW: xw(d), 盘宽高: d ? [Math.round(d.getBoundingClientRect().width), Math.round(d.getBoundingClientRect().height)] : [null, null],
+                                           圆盘两侧空隙: (sw2 && d && i) ? [Math.round(d.getBoundingClientRect().left - sw2.getBoundingClientRect().right), Math.round(i.getBoundingClientRect().left - d.getBoundingClientRect().right)] : [null, null],
+                                           w: [row.clientWidth, row.scrollWidth] } : null;
                             if (wasOff && row) row.classList.add('ct-off');
                         });
                         window.__cmGrad.angleRows(window.__cmText);
                         return o; })()`);
                     // 2026-11-02 用户「阴影框和阴影大小框要左对齐」：四行阴影参数（距离/角度/透明度/大小）的数字框左缘必须一致
                     O.阴影对齐 = await jsx(`(function () { var keep = CT.t; CT.t = 'shadow'; ctRender();
-                        var L = function (id) { var el = document.getElementById(id); var r = el && el.getBoundingClientRect(); return r ? Math.round(r.left) : null; };
-                        var o = { 距离: L('tpShadowD'), 角度: L('tpShadowA'), 透明度: L('tpShadowO'), 大小: L('tpShadowS') };
+                        var XW = function (id) { var el = document.getElementById(id); var r = el && el.getBoundingClientRect(); return r ? [Math.round(r.left), Math.round(r.width)] : [null, null]; };
+                        var WH = function (id) { var el = document.getElementById(id); var r = el && el.getBoundingClientRect(); return r ? [Math.round(r.width), Math.round(r.height)] : [null, null]; };
+                        var o = { 距离: XW('tpShadowD'), 距离框宽高: WH('tpShadowD'), 角度: XW('tpShadowA'), 透明度: XW('tpShadowO'), 大小: XW('tpShadowS'), 角度盘XW: XW('tpShadowDial'), 角度盘宽高: WH('tpShadowDial') };
                         CT.t = keep; ctRender(); return o; })()`);
                     O.无渐变 = await jsx(`(function () { window.__cmText.setAttr('fillGradient', null);
                         window.__cmGrad.angleRows(window.__cmText);
@@ -14011,7 +14016,6 @@ function createWindow() {
                     if (!(ctl.fill && ctl.fill.有盘 && ctl.fill.有框 && ctl.tint && ctl.tint.有盘 && ctl.tint.有框
                           && ctl.stroke && ctl.stroke.有盘 && ctl.stroke.有框 && ctl.shadow && ctl.shadow.有盘 && ctl.shadow.有框)) okG.push('四行控件');
                     if (!(ctl.fill && ctl.fill.同一排 && ctl.tint && ctl.tint.同一排 && ctl.stroke && ctl.stroke.同一排 && ctl.shadow && ctl.shadow.同一排)) okG.push('角度盘和度数框在渐变同一排');
-                    if (!(ctl.fill && ctl.fill.同一排 && ctl.tint && ctl.tint.同一排 && ctl.stroke && ctl.stroke.同一排 && ctl.shadow && ctl.shadow.同一排)) okG.push('角度盘和度数框在渐变同一排');
                     if (!(ctl.fill && ctl.fill.不溢出 && ctl.tint && ctl.tint.不溢出 && ctl.stroke && ctl.stroke.不溢出 && ctl.shadow && ctl.shadow.不溢出)) okG.push('一行放得下(不溢出)');
                     if (!(ctl.fill && ctl.fill.值 === '45' && !ctl.fill.压暗)) okG.push('有渐变时圆盘不压暗/回显 45');
                     if (!(ctl.tint && ctl.tint.压暗 && ctl.stroke && ctl.stroke.压暗 && ctl.shadow && ctl.shadow.压暗)) okG.push('没渐变的三行压暗');
@@ -14022,7 +14026,12 @@ function createWindow() {
                     if (!(O.无渐变 && O.无渐变.压暗 && O.无渐变.值 === '90')) okG.push('没渐变时压暗');
                     if (!(i18nNew && Array.isArray(i18nNew.角度行) && i18nNew.角度行.length === 4 && Array.isArray(i18nNew.中文) && i18nNew.中文.length === 0)) okG.push('新增界面英文');
                     const sy = O.阴影对齐 || {};
-                    if (!(sy.距离 != null && sy.距离 === sy.角度 && sy.距离 === sy.透明度 && sy.距离 === sy.大小)) okG.push('阴影四行数字框左对齐');
+                    const sameXW = (a, b) => Array.isArray(a) && Array.isArray(b) && Math.abs(a[0] - b[0]) <= 1 && Math.abs(a[1] - b[1]) <= 1;
+                    if (!(sameXW(sy.距离, sy.角度) && sameXW(sy.距离, sy.透明度) && sameXW(sy.距离, sy.大小))) okG.push('阴影四行数字框左对齐且同宽');
+                    if (!(['fill','tint','stroke','shadow'].every(function (k) { return ctl[k] && sameXW(ctl[k].xw, sy.距离) && ctl[k].框高 === sy.距离框宽高[1]; }))) okG.push('渐变角度框与上方数字框同位置同宽高');
+                    if (!(['fill','tint','stroke','shadow'].every(function (k) { return ctl[k] && sameXW(ctl[k].盘宽高, sy.角度盘宽高); }))) okG.push('渐变角度盘与上方阴影角度盘同尺寸');
+                    if (!(['fill','tint','stroke','shadow'].every(function (k) { var g = ctl[k] && ctl[k].圆盘两侧空隙; return Array.isArray(g) && g[0] >= 0 && g[1] >= 0; }))) okG.push('渐变角度盘不在右色块与角度框之间');
+                    if (!(['fill','tint','stroke','shadow'].every(function (k) { return ctl[k] && Array.isArray(ctl[k].盘XW) && Array.isArray(sy.角度盘XW) && Math.abs(ctl[k].盘XW[0] - sy.角度盘XW[0]) <= 1; }))) okG.push('四个渐变角度盘与阴影角度盘左缘对齐');
                     gradAngleOk = okG.length === 0;
                     console.log('[cover-maker] selftest gradangle 明细:', JSON.stringify({ ...O, 英文: i18nNew }));
                     console.log('[cover-maker] selftest gradangle 判据:', JSON.stringify({ 没过的步: okG, 渐变角度: gradAngleOk }));
@@ -14068,6 +14077,88 @@ function createWindow() {
                     agentSkewOk = okA.length === 0;
                     console.log('[cover-maker] selftest agentskew 明细:', JSON.stringify(S));
                     console.log('[cover-maker] selftest agentskew 判据:', JSON.stringify({ 没过的步: okA, 'AI 斜切接口': agentSkewOk }));
+                }
+
+                // 契约 RED：--agentcoreedit。只验公开 Agent 契约，不在主进程替 renderer 补实现。
+                // 五类对象均独立执行 add → get_canvas/agentInfo → update → undo，防止一个未注册工具中断其余明细。
+                let agentCoreEditOk = true;
+                if (process.argv.includes('--agentcoreedit')) {
+                    const pngPath = 'C:/tmp/cm_agentcoreedit_' + process.pid + '.png';
+                    let core = { ok: false, failed: ['场景没有运行'] };
+                    try {
+                        await fs.mkdir(path.dirname(pngPath), { recursive: true });
+                        await fs.writeFile(pngPath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+X+XvWQAAAABJRU5ErkJggg==', 'base64'));
+                        core = await jsx(`(async function () {
+                            var out = {}, failed = [];
+                            var call = function (name, args) { return window.__cmAgent.call(name, args || {}); };
+                            var clear = function () { layerNodes().forEach(function (n) { n.destroy(); }); tr.nodes([]); selectedNode = null; mainLayer.draw(); refreshLayers(); window.__cmHistoryReset(); };
+                            var eq = function (a, b) { return JSON.stringify(a) === JSON.stringify(b); };
+                            var center = function (a, b) { return !!(a && b) && Math.abs(Number(a.x) - Number(b.x)) < .01 && Math.abs(Number(a.y) - Number(b.y)) < .01; };
+                            var read = async function (id) {
+                                var c = await call('get_canvas'), n = layerNodes().filter(function (x) { return String(x.getAttr('aid') || '') === String(id || ''); })[0];
+                                return { get_canvas: c && c.elements ? (c.elements.find(function (x) { return String(x.id) === String(id); }) || null) : null,
+                                    agentInfo: n ? agentInfo(n) : null };
+                            };
+                            var run = async function (label, addName, addArgs, updateArgs, check0, check1) {
+                                clear(); var x = {};
+                                try {
+                                    x.add = await call(addName, addArgs); var id = x.add && x.add.element && x.add.element.id;
+                                    x.initial = await read(id);
+                                    x.update = id ? await call('update_element', Object.assign({ id: id }, updateArgs)) : { ok: false, error: 'add 未返回 id' };
+                                    x.updated = await read(id);
+                                    if (x.update && x.update.ok) undo();
+                                    x.undo = await read(id);
+                                    if (!(x.add && x.add.ok && check0(x.add.element) && check0(x.initial.get_canvas) && check0(x.initial.agentInfo))) failed.push(label + ' add/get_canvas/agentInfo 读回');
+                                    if (!(x.update && x.update.ok && check1(x.update.element) && check1(x.updated.get_canvas) && check1(x.updated.agentInfo)
+                                          && center(x.initial.agentInfo, x.update.element) && center(x.initial.agentInfo, x.updated.get_canvas) && center(x.initial.agentInfo, x.updated.agentInfo))) failed.push(label + ' update/双路读回/中心不漂');
+                                    if (!(check0(x.undo.get_canvas) && check0(x.undo.agentInfo))) failed.push(label + ' undo 恢复');
+                                } catch (e) { x.error = String(e && e.message || e); failed.push(label + ' 场景异常'); }
+                                out[label] = x;
+                            };
+                            try {
+                                clear(); await call('set_platforms', { platforms: ['xiaohongshu'] });
+                                var text0 = function (x) { return !!x && x.letter_spacing === 8 && x.stroke && x.stroke.mode === 'inner' && x.stroke.width === 8
+                                    && x.stroke.color === '#112233' && x.stroke.gradient && eq(x.stroke.gradient.colors, ['#112233','#778899']) && x.stroke.gradient.angle === 0; };
+                                await run('文字', 'add_text', { text:'核心编辑契约', frame:1, x:.42, y:.28, size:42, shadow:false, letter_spacing:8,
+                                    stroke_mode:'inner', stroke_width:8, stroke_color:'#112233', stroke_gradient:{colors:['#112233','#778899'],angle:0} },
+                                    { letter_spacing:-5, stroke_mode:'outer', stroke_gradient:{colors:['#AA2200','#22AACC'],angle:90} }, text0,
+                                    function (x) { return !!x && x.letter_spacing === -5 && x.stroke && x.stroke.mode === 'outer' && x.stroke.gradient
+                                        && eq(x.stroke.gradient.colors, ['#AA2200','#22AACC']) && x.stroke.gradient.angle === 90; });
+                                await run('四角圆角', 'add_shape', { shape:'roundrect', frame:1, x:.4, y:.4, width:.35, height:.22, corner_radius:[12,20,4,0] },
+                                    { corner_radius:[2,3,4,5] }, function (x) { return !!x && eq(x.corner_radius,[12,20,4,0]); }, function (x) { return !!x && eq(x.corner_radius,[2,3,4,5]); });
+                                var lp0={start:{x:0,y:.5},bend:{x:.5,y:.2},end:{x:1,y:.5}}, lp1={start:{x:0,y:.5},bend:{x:.62,y:.82},end:{x:1,y:.5}};
+                                await run('曲线节点', 'add_shape', { shape:'curve', frame:1, x:.52, y:.45, width:.45, line_points:lp0 }, { line_points:lp1 },
+                                    function (x) { return !!x && eq(x.line_points,lp0); }, function (x) { return !!x && eq(x.line_points,lp1); });
+                                var bt0={tip_x:.15,tip_y:1.25,width:24}, bt1={tip_x:.82,tip_y:1.4,width:36};
+                                await run('气泡尾巴', 'add_shape', { shape:'chatRect', frame:1, x:.48, y:.52, width:.38, bubble_tail:bt0 }, { bubble_tail:bt1 },
+                                    function (x) { return !!x && eq(x.bubble_tail,bt0); }, function (x) { return !!x && eq(x.bubble_tail,bt1); });
+                                var tg0={colors:['#55CCFF','#6633FF'],angle:45}, tg1={colors:['#FF3300','#22DD88'],angle:90};
+                                await run('图片贴纸', 'add_sticker_image', { path:${JSON.stringify(pngPath)}, frame:1, x:.5, y:.5, width:.3, tint:'#55CCFF', tint_gradient:tg0 },
+                                    { tint:'#FF3300', tint_gradient:tg1 },
+                                    function (x) { return !!x && (x.type === 'sticker' || x.type === 'image') && x.role === 'sticker' && x.tint === '#55CCFF' && eq(x.tint_gradient,tg0); },
+                                    function (x) { return !!x && x.tint === '#FF3300' && eq(x.tint_gradient,tg1); });
+                                clear();
+                                var hi=await call('add_text',{text:'字距上界',frame:1,letter_spacing:999,shadow:false});
+                                var lo=await call('add_text',{text:'字距下界',frame:1,letter_spacing:-999,shadow:false});
+                                var em=await call('add_sticker',{emoji:'⭐',frame:1,tint:'#123456',tint_gradient:tg0}), er=await read(em && em.element && em.element.id);
+                                var miss=await call('add_sticker_image',{path:'C:/tmp/cm_agentcoreedit_definitely_missing.png',frame:1,tint:'#FFFFFF'});
+                                out['负对照']={字距上界:hi,字距下界:lo,Emoji:em,Emoji读回:er,不存在文件:miss};
+                                if (!(hi && hi.element && hi.element.letter_spacing === 100 && lo && lo.element && lo.element.letter_spacing === -20)) failed.push('letter_spacing 夹紧 [-20,100]');
+                                var ei=er.agentInfo, emojiSafe=(em && em.ok === false)||(em && em.ok && ei && ei.type === 'sticker' && ei.emoji && ei.tint == null && ei.tint_gradient == null);
+                                if (!emojiSafe) failed.push('Emoji tint 明确拒绝或忽略且不伪装图片贴纸');
+                                if (!(miss && miss.ok === false)) failed.push('不存在图片贴纸文件返回 ok:false');
+                            } catch (e) { out['场景异常']=String(e && e.stack || e); failed.push('总场景异常：'+String(e && e.message || e)); }
+                            finally { clear(); activePlatforms.length=0; mainPlatform=null; syncPlatformMenu(); drawPlatformFrame(); clear(); }
+                            return { ok:failed.length===0, failed:failed, detail:out };
+                        })()`);
+                    } catch (e) {
+                        core = { ok: false, failed: ['主进程准备/执行异常：' + String(e && e.message || e)], detail: {} };
+                    } finally {
+                        try { await fs.unlink(pngPath); } catch (e) { /* 文件未创建或已清理 */ }
+                    }
+                    agentCoreEditOk = !!(core && core.ok);
+                    console.log('[cover-maker] selftest agentcoreedit 明细:', JSON.stringify(core && core.detail || {}));
+                    console.log('[cover-maker] selftest agentcoreedit 判据:', JSON.stringify({ 没过的步: core && core.failed || ['无结果'], 'Agent 核心编辑契约': agentCoreEditOk }));
                 }
 
                 // 可选场景：--syspaste 系统剪贴板里的文字也能粘到画布（2026-11-02 用户「从微信复制文字后在画布上粘贴不上」）
@@ -19389,13 +19480,13 @@ function createWindow() {
                     && frameWhiteOk
                     && r.stickers === stickerExpect
                     && libOk && libPasteOk && libRemoveOk && frameDragOk && stickerPasteOk && multiDragOk && skipOk && skipUiOk
-                    && textPasteOk && textEditOk && sidebarOk && auditOk && undoRedoOk && layerOrderOk && platCheckOk && layersOk                    && imgDropOk && frameStackOk && fillFrameOk && ffLateOk && imgDrag2Ok && frameMoveOk && frameScaleOk && exportOk && exportCancelOk && sharpOk && tplOk && fontUiOk && fontDockOk && ctPanelOk && dockLibsOk && fontWarnOk && whiteShadowOk && imgClipOk && decorClipOk && frameNosOk && layerMultiOk && textPathOk && imgOutOk && moveFrameOk && moveRightOk && shrinkFillOk && frameChildrenOk && frameKeepOk && copyPasteOk && tplRenameOk && zoomShiftOk && zoomShiftPosOk && platShareOk && qProbeOk && keyDelOk && strokeModeOk && macFontsOk && canvasZoomOk && zoomProbeOk && zoomFrameOk && landFillOk && marqueeOk && snapGuideOk && save2libOk && roundtripOk && save2libUiOk && fileMenuOk && fontMenuOk && fontPlanOk && fontImportOk && imgHitOk && fontFallbackOk && textRenderOk && winLifeOk && subjectOk && skewOk && colorsOk && layerEyeOk && layerRenameOk && editScaleOk && splitSwitchOk && cellPanOk && xhs11Ok && clickFrameOk && biliNumOk && creamOk && specialScaleOk && ctxSkewOk && colorSelOk && pasteFitOk && imgSkewOk && defTabOk && splitOk && colorPinsOk && layerCopyOk && subjShadowOk && imageFxOk && copyHexOk && extractGreenOk && board18Ok && layerMultiDragOk && widenOnlyOk && defaultFontOk && textFxOk && eraserOk && photoRotateOk && eyedropOk && toggleFollowOk && updateCheckOk && shapesOk && mcpOk && agentTxOk && agentLayoutOk && agentCreateOk && agentRegOk && agentSubjectOk && agentFontOk && agentOpacityOk && agentLayersOk && textGradOk && textStyleMemoryOk && frameShapeOk && gzhOk && customRatioOk && alignOk && weightOk && guidesOk && shiftDragOk && stickerGradOk && shapeFxOk && cornerOk && bubbleTailOk && tplSubjectOk && sysPasteOk && tplIoOk && agentSkewOk && gradAngleOk;
+                    && textPasteOk && textEditOk && sidebarOk && auditOk && undoRedoOk && layerOrderOk && platCheckOk && layersOk                    && imgDropOk && frameStackOk && fillFrameOk && ffLateOk && imgDrag2Ok && frameMoveOk && frameScaleOk && exportOk && exportCancelOk && sharpOk && tplOk && fontUiOk && fontDockOk && ctPanelOk && dockLibsOk && fontWarnOk && whiteShadowOk && imgClipOk && decorClipOk && frameNosOk && layerMultiOk && textPathOk && imgOutOk && moveFrameOk && moveRightOk && shrinkFillOk && frameChildrenOk && frameKeepOk && copyPasteOk && tplRenameOk && zoomShiftOk && zoomShiftPosOk && platShareOk && qProbeOk && keyDelOk && strokeModeOk && macFontsOk && canvasZoomOk && zoomProbeOk && zoomFrameOk && landFillOk && marqueeOk && snapGuideOk && save2libOk && roundtripOk && save2libUiOk && fileMenuOk && fontMenuOk && fontPlanOk && fontImportOk && imgHitOk && fontFallbackOk && textRenderOk && winLifeOk && subjectOk && skewOk && colorsOk && layerEyeOk && layerRenameOk && editScaleOk && splitSwitchOk && cellPanOk && xhs11Ok && clickFrameOk && biliNumOk && creamOk && specialScaleOk && ctxSkewOk && colorSelOk && pasteFitOk && imgSkewOk && defTabOk && splitOk && colorPinsOk && layerCopyOk && subjShadowOk && imageFxOk && copyHexOk && extractGreenOk && board18Ok && layerMultiDragOk && widenOnlyOk && defaultFontOk && textFxOk && eraserOk && photoRotateOk && eyedropOk && toggleFollowOk && updateCheckOk && shapesOk && mcpOk && agentTxOk && agentLayoutOk && agentCreateOk && agentRegOk && agentSubjectOk && agentFontOk && agentOpacityOk && agentLayersOk && textGradOk && textStyleMemoryOk && frameShapeOk && gzhOk && customRatioOk && alignOk && weightOk && guidesOk && shiftDragOk && stickerGradOk && shapeFxOk && cornerOk && bubbleTailOk && tplSubjectOk && sysPasteOk && tplIoOk && agentSkewOk && agentCoreEditOk && gradAngleOk;
                 console.log('[cover-maker] selftest 分项:', JSON.stringify({
                     基础: !!(r.konva && r.stage && r.bridge), 库面板: popupLayerOk, 底部格子: emptyBoxOk, 底边对齐: bottomOk, 启动开着的库: dockAtStart.currentLib, 框: (onlyArg || framedrag || multidrag || plArg ? r.frames > 0 : r.frames === 0), 框样式: frameWhiteOk,
                     贴纸数: r.stickers === stickerExpect, 素材库: libOk, 素材贴图: libPasteOk, 素材删除: libRemoveOk,
                     框不可拖: frameDragOk, 贴纸贴入: stickerPasteOk, 不叠画: multiDragOk, 拒收: skipOk, 拒收提示: skipUiOk,
                     复制粘贴: copyPasteOk,
-                    文字贴入: textPasteOk, 整组编辑: textEditOk, 左栏: sidebarOk, 体检: auditOk, 撤销重做: undoRedoOk,
+                    文字贴入: textPasteOk, 整组编辑: textEditOk, 左栏: sidebarOk, 体检: auditOk, 撤销重做: undoRedoOk, 'Agent核心编辑契约': agentCoreEditOk,
                     层序: layerOrderOk, 图层面板: layersOk, 图片进画布: imgDropOk, 参考框: frameStackOk,
                     导出: exportOk, 导出取消: exportCancelOk, 清晰度: sharpOk, 模板: tplOk, 字体库改名: tplRenameOk, 缩放后照片不漂: zoomShiftOk, '页面/窗口变了框位置不变': zoomShiftPosOk, '同比例平台=同一块框': platShareOk, '导出不压缩画质(按目标像素重渲染)': qProbeOk, 'Delete/回车快捷删除': keyDelOk, '外描边/内描边': strokeModeOk, 'Mac 字体表读族名': macFontsOk, 字体: fontUiOk, 字体库格子: fontDockOk, '文字/阴影/描边分页': ctPanelOk, 三库切格子: dockLibsOk, 字体缺失提示: fontWarnOk, 白框立体感: whiteShadowOk, 图片只在框里显示: imgClipOk, '文字/贴纸只在框里显示': decorClipOk, '图层后框编号': frameNosOk, '图层多选/复制图层/拖到框编号复制': layerMultiOk, 文字路径: textPathOk, 图片能移到画布外: imgOutOk, '照片拖到另一块框也显示': moveFrameOk, '缩小后框能拖到画布最右边': moveRightOk, '缩框后照片仍盖满整块框线': shrinkFillOk, '贴纸/文字也是框的子对象': frameChildrenOk, '改窗口后框排版守恒': frameKeepOk, 框选: marqueeOk, 中心准线: snapGuideOk, 框选存库: save2libOk, 往返一致: roundtripOk, 框选存库入口: save2libUiOk,                    画布随缩放等比: canvasZoomOk, '缩小/放大页面图不消失': zoomProbeOk, 横版拉满跟随: landFillOk, 图片拖进框自动铺满: fillFrameOk, 先拖图后开平台: ffLateOk, 框里拖图: imgDrag2Ok, '框+图整组拖': frameMoveOk, '相框等比缩放': frameScaleOk, 字体替代分平台: fontFallbackOk, 文字描边阴影尺度: textRenderOk, 窗口销毁安全: winLifeOk, 提取主体: subjectOk, 斜切: skewOk, 颜色板块: colorsOk, 图层小眼睛: layerEyeOk, 图层改名: layerRenameOk, '放大文字双击不变小': editScaleOk, '切分块照片不丢': splitSwitchOk, '格子里挪图不跑格': cellPanOk, '小红书1:1框': xhs11Ok, '点框=切数字+黄圈': clickFrameOk, '框编号同方向左边在前': biliNumOk, 奶油色主题: creamOk, '斜切后普通拖不错位': specialScaleOk, 右键斜切: ctxSkewOk, '选中文字点颜色跟着变': colorSelOk, '复制到别的框不出框': pasteFitOk, 图片斜切: imgSkewOk, 图层默认亮1: defTabOk, 分块: splitOk, 常驻颜色: colorPinsOk, '图层多选后复制粘贴': layerCopyOk, 主体阴影: subjShadowOk, '图片/贴纸描边阴影': imageFxOk, '右键复制色值': copyHexOk, '渐变小块色提得出': extractGreenOk, '提色板三排18格': board18Ok, '图层多选后画布上一起拖': layerMultiDragOk, '窗口只变宽图跟框': widenOnlyOk, 默认字体按使用次数: defaultFontOk, '字透明度/阴影透明度/阴影大小': textFxOk, 橡皮擦: eraserOk, 照片角外侧旋转: photoRotateOk, 吸管: eyedropOk, '勾平台框挪了框里东西跟着': toggleFollowOk, 检查更新: updateCheckOk, 形状: shapesOk, 'AI 调用(MCP)': mcpOk, 画布事务: agentTxOk, 自动排版落地: agentLayoutOk, 一键做封面: agentCreateOk, 自动接入Agent: agentRegOk, 'AI 抠主体': agentSubjectOk, 'AI 字体缺失提示': agentFontOk, '透明度 + 笔刷': agentOpacityOk, '文字/描边/阴影渐变': textGradOk, '最近文字样式记忆': textStyleMemoryOk, '框里的形状跟着缩放': frameShapeOk, 公众号: gzhOk, 对齐: alignOk, 字体样式: weightOk, 参考线: guidesOk, 'Shift 锁方向': shiftDragOk, 贴纸渐变: stickerGradOk, 形状同文字: shapeFxOk, 圆角: cornerOk, 气泡尾巴: bubbleTailOk, '系统剪贴板粘文字(微信复制→画布)': sysPasteOk, '模板导出/导入(.cmtpl 带图片)': tplIoOk, 'AI 斜切接口': agentSkewOk, '渐变角度盘': gradAngleOk, 模板带主体: tplSubjectOk, 帮助菜单: helpMenuOk, 字体菜单: fontMenuOk, '导入字体弹对话框(空清单不吞)': fontPlanOk, 导入字体: fontImportOk, '框外那截不可点(§0.99.21)': imgHitOk, 文件菜单: fileMenuOk
                 }));

@@ -63,15 +63,71 @@ async function run() {
     'update_element', 'set_layer_order', 'delete_element', 'list_shapes', 'list_fonts', 'check_fonts', 'list_templates',
     'apply_template', 'undo', 'redo', 'screenshot', 'export_images'
   ];
-  const newNames = ['create_cover', 'get_agent_status', 'cancel_cover_task', 'extract_subject'];
-  assert.equal(TOOLS.length, legacyNames.length + newNames.length);
-  assert.deepEqual(TOOLS.map((tool) => tool.name), legacyNames.concat(newNames));
-  assert.equal(new Set(TOOLS.map((tool) => tool.name)).size, TOOLS.length);
+  const existingAgentNames = ['create_cover', 'get_agent_status', 'cancel_cover_task', 'extract_subject'];
+  const fullAgentNames = [
+    'add_sticker_image', 'set_element_state', 'duplicate_elements', 'fit_image_to_frame',
+    'erase_element', 'clear_erase', 'get_template', 'save_template', 'rename_template',
+    'delete_template', 'import_templates', 'export_template', 'export_templates',
+    'get_guides', 'set_guide_preferences', 'add_guide', 'remove_guide', 'clear_guides',
+    'get_app_settings', 'set_theme', 'set_language'
+  ];
+  const expectedToolNames = legacyNames.concat(existingAgentNames, fullAgentNames);
+  const actualToolNames = TOOLS.map((tool) => tool.name);
+  assert.equal(TOOLS.length, 43, 'Agent/MCP tool surface has exactly 43 tools');
+  assert.equal(new Set(actualToolNames).size, TOOLS.length, 'Agent/MCP tool names are unique');
+  assert.deepEqual([...actualToolNames].sort(), [...expectedToolNames].sort(),
+    'Agent/MCP tool set exactly preserves the existing 22 tools and adds the new 21 tools');
   assert.equal(hasTool('get_canvas'), true);
   assert.equal(hasTool('create_cover'), true);
+  assert.equal(hasTool('add_sticker_image'), true);
   assert.equal(hasTool('not_a_tool'), false);
   assert.equal(hasTool(), false);
   assert.equal(TOOLS.filter((tool) => tool.name === 'create_cover').length, 1);
+
+  function requireTool(name) {
+    const tool = TOOLS.find((candidate) => candidate.name === name);
+    assert.ok(tool, `${name} tool exists`);
+    assert.ok(tool.inputSchema, `${name}.inputSchema exists`);
+    assert.ok(tool.inputSchema.properties, `${name}.inputSchema.properties exists`);
+    return tool;
+  }
+
+  function requireProperty(tool, field) {
+    const property = tool.inputSchema.properties[field];
+    assert.ok(property, `${tool.name}.${field} schema exists`);
+    return property;
+  }
+
+  function assertRequired(tool, fields) {
+    assert.ok(Array.isArray(tool.inputSchema.required), `${tool.name}.required exists`);
+    for (const field of fields) {
+      assert.ok(tool.inputSchema.required.includes(field), `${tool.name}.${field} is required`);
+    }
+  }
+
+  function assertGradient(tool, field) {
+    const gradient = requireProperty(tool, field);
+    assert.equal(gradient.type, 'object', `${tool.name}.${field} is an object`);
+    assert.ok(gradient.properties, `${tool.name}.${field}.properties exists`);
+    const colors = gradient.properties.colors;
+    const angle = gradient.properties.angle;
+    assert.ok(colors, `${tool.name}.${field}.colors schema exists`);
+    assert.ok(angle, `${tool.name}.${field}.angle schema exists`);
+    assert.equal(colors.type, 'array', `${tool.name}.${field}.colors is an array`);
+    assert.equal(colors.maxItems, 4, `${tool.name}.${field}.colors has at most four stops`);
+    assert.equal(angle.type, 'number', `${tool.name}.${field}.angle is a number`);
+  }
+
+  function assertCornerRadius(tool) {
+    const radius = requireProperty(tool, 'corner_radius');
+    assert.ok(Array.isArray(radius.anyOf), `${tool.name}.corner_radius uses anyOf`);
+    const numberRadius = radius.anyOf.find((option) => option.type === 'number');
+    const arrayRadius = radius.anyOf.find((option) => option.type === 'array');
+    assert.ok(numberRadius, `${tool.name}.corner_radius accepts a number`);
+    assert.ok(arrayRadius, `${tool.name}.corner_radius accepts an array`);
+    assert.equal(arrayRadius.minItems, 4, `${tool.name}.corner_radius array has four items`);
+    assert.equal(arrayRadius.maxItems, 4, `${tool.name}.corner_radius array has four items`);
+  }
 
   const getCanvas = TOOLS.find((tool) => tool.name === 'get_canvas');
   assert.deepEqual(getCanvas.inputSchema, { type: 'object', properties: {} });
@@ -93,11 +149,163 @@ async function run() {
     all: { type: 'boolean' }
   });
 
-  const addText = TOOLS.find((tool) => tool.name === 'add_text');
+  const addText = requireTool('add_text');
   assert.deepEqual(addText.inputSchema.required, ['text']);
   assert.equal(addText.inputSchema.properties.x.minimum, 0);
   assert.equal(addText.inputSchema.properties.x.maximum, 1);
   assert.equal(addText.inputSchema.properties.frame.minimum, 1);
+  for (const name of ['add_text', 'update_element']) {
+    const tool = requireTool(name);
+    const letterSpacing = requireProperty(tool, 'letter_spacing');
+    assert.equal(letterSpacing.minimum, -20, `${name}.letter_spacing minimum is -20`);
+    assert.equal(letterSpacing.maximum, 100, `${name}.letter_spacing maximum is 100`);
+    assert.deepEqual(requireProperty(tool, 'stroke_mode').enum, ['outer', 'inner'],
+      `${name}.stroke_mode supports outer and inner`);
+    assertGradient(tool, 'stroke_gradient');
+  }
+
+  const addShape = requireTool('add_shape');
+  assertCornerRadius(addShape);
+  assert.equal(requireProperty(addShape, 'line_points').type, 'object', 'add_shape.line_points is an object');
+  assert.equal(requireProperty(addShape, 'bubble_tail').type, 'object', 'add_shape.bubble_tail is an object');
+
+  const updateElement = requireTool('update_element');
+  assertGradient(updateElement, 'tint_gradient');
+  assert.equal(requireProperty(updateElement, 'tint').type, 'string', 'update_element.tint is a string');
+  assertCornerRadius(updateElement);
+  assert.equal(requireProperty(updateElement, 'line_points').type, 'object', 'update_element.line_points is an object');
+  assert.equal(requireProperty(updateElement, 'bubble_tail').type, 'object', 'update_element.bubble_tail is an object');
+  const warpQuad = requireProperty(updateElement, 'warp_quad');
+  assert.ok(Array.isArray(warpQuad.anyOf), 'update_element.warp_quad uses anyOf');
+  assert.ok(warpQuad.anyOf.some((option) => option.type === 'object'), 'update_element.warp_quad accepts an object');
+  assert.ok(warpQuad.anyOf.some((option) => option.type === 'null'), 'update_element.warp_quad accepts null');
+
+  const addStickerImage = requireTool('add_sticker_image');
+  assertRequired(addStickerImage, ['path']);
+  for (const field of ['path', 'frame', 'x', 'y', 'width', 'tint', 'tint_gradient']) {
+    requireProperty(addStickerImage, field);
+  }
+  assert.equal(requireProperty(addStickerImage, 'path').type, 'string', 'add_sticker_image.path is a string');
+  assertGradient(addStickerImage, 'tint_gradient');
+  const emojiSticker = requireTool('add_sticker');
+  assert.equal(Object.hasOwn(emojiSticker.inputSchema.properties, 'tint'), false,
+    'add_sticker must not expose image-only tint');
+  assert.equal(Object.hasOwn(emojiSticker.inputSchema.properties, 'tint_gradient'), false,
+    'add_sticker must not expose image-only tint_gradient');
+
+  const setElementState = requireTool('set_element_state');
+  assertRequired(setElementState, ['id']);
+  assert.equal(requireProperty(setElementState, 'visible').type, 'boolean', 'set_element_state.visible is boolean');
+  assert.equal(requireProperty(setElementState, 'locked').type, 'boolean', 'set_element_state.locked is boolean');
+
+  const duplicateElements = requireTool('duplicate_elements');
+  assertRequired(duplicateElements, ['ids', 'target_frame']);
+  const duplicateIds = requireProperty(duplicateElements, 'ids');
+  assert.equal(duplicateIds.type, 'array', 'duplicate_elements.ids is an array');
+  assert.equal(duplicateIds.minItems, 1, 'duplicate_elements.ids requires at least one id');
+  assert.equal(duplicateIds.uniqueItems, true, 'duplicate_elements.ids contains unique ids');
+
+  const fitImage = requireTool('fit_image_to_frame');
+  assertRequired(fitImage, ['id']);
+  assert.deepEqual(requireProperty(fitImage, 'mode').enum, ['cover'], 'fit_image_to_frame.mode is cover');
+  for (const field of ['focal_x', 'focal_y']) {
+    const focal = requireProperty(fitImage, field);
+    assert.equal(focal.minimum, 0, `fit_image_to_frame.${field} minimum is 0`);
+    assert.equal(focal.maximum, 1, `fit_image_to_frame.${field} maximum is 1`);
+  }
+  requireProperty(fitImage, 'zoom');
+  requireProperty(fitImage, 'cell');
+
+  const eraseElement = requireTool('erase_element');
+  assertRequired(eraseElement, ['id', 'strokes']);
+  const strokes = requireProperty(eraseElement, 'strokes');
+  assert.equal(strokes.type, 'array', 'erase_element.strokes is an array');
+  assert.ok(Number.isInteger(strokes.maxItems) && strokes.maxItems > 0, 'erase_element.strokes has a finite upper limit');
+  assert.ok(strokes.items && strokes.items.properties, 'erase_element.strokes items have properties');
+  const erasePoints = strokes.items.properties.points;
+  assert.ok(erasePoints, 'erase_element.strokes[].points schema exists');
+  assert.equal(erasePoints.type, 'array', 'erase_element.strokes[].points is an array');
+  assert.ok(Number.isInteger(erasePoints.maxItems) && erasePoints.maxItems > 0,
+    'erase_element.strokes[].points has a finite upper limit');
+  const clearErase = requireTool('clear_erase');
+  assertRequired(clearErase, ['id']);
+
+  const getTemplate = requireTool('get_template');
+  assert.equal(requireProperty(getTemplate, 'id').type, 'string', 'get_template.id is a string');
+  assert.equal(requireProperty(getTemplate, 'name').type, 'string', 'get_template.name is a string');
+  const saveTemplate = requireTool('save_template');
+  assertRequired(saveTemplate, ['name', 'frame']);
+  requireProperty(saveTemplate, 'name');
+  requireProperty(saveTemplate, 'frame');
+  const renameTemplate = requireTool('rename_template');
+  assertRequired(renameTemplate, ['id', 'name']);
+  const deleteTemplate = requireTool('delete_template');
+  assertRequired(deleteTemplate, ['id', 'confirm']);
+  assert.equal(requireProperty(deleteTemplate, 'confirm').const, true, 'delete_template.confirm must be true');
+  const importTemplates = requireTool('import_templates');
+  assertRequired(importTemplates, ['path']);
+  assert.equal(requireProperty(importTemplates, 'path').type, 'string', 'import_templates.path is a string');
+  const exportTemplate = requireTool('export_template');
+  assertRequired(exportTemplate, ['id', 'path']);
+  assert.equal(requireProperty(exportTemplate, 'path').type, 'string', 'export_template.path is a string');
+  const exportTemplates = requireTool('export_templates');
+  assertRequired(exportTemplates, ['ids', 'path']);
+  assert.equal(requireProperty(exportTemplates, 'ids').type, 'array', 'export_templates.ids is an array');
+  assert.equal(requireProperty(exportTemplates, 'path').type, 'string', 'export_templates.path is a string');
+
+  const getGuides = requireTool('get_guides');
+  const guidePreferences = requireTool('set_guide_preferences');
+  for (const field of ['show', 'snap', 'lock']) {
+    assert.equal(requireProperty(guidePreferences, field).type, 'boolean', `set_guide_preferences.${field} is boolean`);
+  }
+  const addGuide = requireTool('add_guide');
+  assertRequired(addGuide, ['orientation']);
+  assert.deepEqual(requireProperty(addGuide, 'orientation').enum, ['horizontal', 'vertical'],
+    'add_guide.orientation supports horizontal and vertical');
+  requireProperty(addGuide, 'canvas_px');
+  requireProperty(addGuide, 'frame');
+  requireProperty(addGuide, 'frame_ratio');
+  assert.ok(Array.isArray(addGuide.inputSchema.anyOf), 'add_guide location uses anyOf');
+  assert.ok(addGuide.inputSchema.anyOf.some((option) => option.required && option.required.includes('canvas_px')),
+    'add_guide supports canvas_px location');
+  assert.ok(addGuide.inputSchema.anyOf.some((option) => option.required && option.required.includes('frame') && option.required.includes('frame_ratio')),
+    'add_guide supports frame + frame_ratio location');
+  const removeGuide = requireTool('remove_guide');
+  assertRequired(removeGuide, ['id']);
+  const clearGuides = requireTool('clear_guides');
+  assertRequired(clearGuides, ['confirm']);
+  assert.equal(requireProperty(clearGuides, 'confirm').const, true, 'clear_guides.confirm must be true');
+
+  const getAppSettings = requireTool('get_app_settings');
+  const setTheme = requireTool('set_theme');
+  assertRequired(setTheme, ['theme']);
+  assert.deepEqual(requireProperty(setTheme, 'theme').enum, ['cream', 'classic'], 'set_theme.theme supports cream and classic');
+  const setLanguage = requireTool('set_language');
+  assertRequired(setLanguage, ['language']);
+  assert.deepEqual(requireProperty(setLanguage, 'language').enum, ['zh', 'en'], 'set_language.language supports zh and en');
+
+  const readOnlyFullTools = ['get_template', 'get_guides', 'get_app_settings'];
+  const destructiveFullTools = ['delete_template', 'export_template', 'export_templates', 'clear_guides'];
+  const ordinaryWriteFullTools = fullAgentNames.filter((name) =>
+    !readOnlyFullTools.includes(name) && !destructiveFullTools.includes(name));
+  for (const name of fullAgentNames) {
+    const tool = requireTool(name);
+    assert.ok(tool.annotations, `${name}.annotations exists`);
+    assert.equal(tool.annotations.openWorldHint, false, `${name}.annotations.openWorldHint is false`);
+    assert.equal(tool.annotations.readOnlyHint, readOnlyFullTools.includes(name),
+      `${name}.annotations.readOnlyHint is ${readOnlyFullTools.includes(name)}`);
+  }
+  for (const name of readOnlyFullTools.concat(ordinaryWriteFullTools)) {
+    assert.equal(requireTool(name).annotations.destructiveHint, false, `${name} is not destructive`);
+  }
+  for (const name of destructiveFullTools) {
+    assert.equal(requireTool(name).annotations.destructiveHint, true, `${name}.annotations.destructiveHint is true`);
+  }
+  for (const name of ['export_template', 'export_templates']) {
+    assert.equal(requireTool(name).annotations.idempotentHint, true, `${name}.annotations.idempotentHint is true`);
+  }
+  // Keep references alive so read-only schema checks above cannot accidentally be removed as unused setup.
+  assert.ok(getGuides && getAppSettings);
   // 透明度（参考图半透明文字）：文字 / 形状 / 贴纸 / 改元素都能给
   for (const name of ['add_text', 'add_shape', 'add_sticker', 'update_element']) {
     const op = TOOLS.find((tool) => tool.name === name).inputSchema.properties.opacity;
