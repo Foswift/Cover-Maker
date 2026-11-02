@@ -28,6 +28,11 @@ const HEX = { type: 'string', pattern: '^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$' };
 // 透明度（用户 2026-10-21 测参考图：上下两行「FRIDAY」半透明透出天空，原来没法做）
 const TEXT_OPACITY = { type: 'number', minimum: 0, maximum: 1, description: '文字不透明度（0~1，1 = 不透明；0.5 = 半透明能透出背景。只淡字本身，描边 / 阴影不跟着淡，同右栏「字透明度」）' };
 const OPACITY = { type: 'number', minimum: 0, maximum: 1, description: '不透明度（0~1，1 = 不透明）' };
+// 斜切（用户 2026-11-02「用 agent 控制说文字的斜切没有接口」）：跟画布上「右键 → 斜切」拖四边中点同一套变换，单位**度**，0 = 不斜
+const SKEW = {
+  skew_x: { type: 'number', minimum: -75, maximum: 75, description: '水平斜切（度）：正 = 顶边右移（斜排标题 / 仿斜体），0 = 不斜。建议 ±5~25，超过 45 会明显变形' },
+  skew_y: { type: 'number', minimum: -75, maximum: 75, description: '垂直斜切（度）：正 = 左边下移，0 = 不斜' }
+};
 // 文字渐变（同日第三轮实测：参考图中间那行 FRIDAY 是青 → 浅青渐变，只能纯色）
 const GRADIENT = {
   type: 'object',
@@ -115,7 +120,8 @@ const TOOLS = [
         shadow: { type: 'boolean', description: '要不要阴影（默认带一点阴影；false = 去掉）' },
         align: { type: 'string', enum: ['left', 'center', 'right'], description: '多行文字的对齐（默认左对齐；居中排的标题用 center）' },
         opacity: TEXT_OPACITY,
-        gradient: GRADIENT
+        gradient: GRADIENT,
+        ...SKEW
       }),
       required: ['text']
     }
@@ -139,7 +145,8 @@ const TOOLS = [
           properties: { color: COLOR('描边颜色'), width: { type: 'number', description: '粗细（像素）' }, dashed: { type: 'boolean', description: 'true = 虚线' } }
         },
         shadow: SHADOW,
-        opacity: OPACITY
+        opacity: OPACITY,
+        ...SKEW
       }),
       required: ['shape']
     }
@@ -174,7 +181,8 @@ const TOOLS = [
         to_front: { type: 'boolean', description: 'true = 移到最上层' },
         to_back: { type: 'boolean', description: 'true = 移到最下层（比如把新加的背景色块垫到底）' },
         opacity: { type: 'number', minimum: 0, maximum: 1, description: '不透明度（0~1）。文字 = 只淡字本身（同右栏「字透明度」）；形状 / 贴纸 / 照片 = 整个元素' },
-        gradient: GRADIENT
+        gradient: GRADIENT,
+        ...SKEW
       }),
       required: ['id']
     }

@@ -18335,6 +18335,8 @@ window.addEventListener('DOMContentLoaded', function () {
                 o.w = r3(b.width / f.rect.width); o.h = r3(b.height / f.rect.height);
             }
             if (Math.round(n.rotation())) o.rotation = Math.round(n.rotation());
+            if (Math.round(n.skewX())) o.skew_x = Math.round(n.skewX());            // 2026-11-02 斜切（度）：agent 要能读到再复刻
+            if (Math.round(n.skewY())) o.skew_y = Math.round(n.skewY());
             if (o.type === 'text' || o.type === 'path_text') { o.text = n.text(); o.color = n.fill(); o.size = Math.round(textShownSize(n)); o.font = n.fontFamily(); }
             const op = (o.type === 'text' || o.type === 'path_text') ? fillOpacityOf(n) : n.opacity();
             if (op < 1) o.opacity = Math.round(op * 100) / 100;
@@ -18484,6 +18486,24 @@ window.addEventListener('DOMContentLoaded', function () {
                 n.scaleX(n.scaleX() * k); n.scaleY(n.scaleY() * k);
             }
         }
+        // 2026-11-02 用户「用 agent 控制说文字的斜切没有接口」：给 AI 补上斜切（skew_x / skew_y，单位度）
+        //   跟画布上「右键 → 斜切」拖四边中点同一套 attr（Konva 的 skewX / skewY，度）；斜切以节点左上角为原点，
+        //   会让整块外框位移 → 这里按外框中心回补一次（同 update_element 里 rotation 的做法），
+        //   x / y 仍旧是「中心点占框的比例」，模型不用自己算漂移。负对照 window.__cmNoAgentSkew。
+        function agentApplySkew(n, a) {
+            if (!n || !a || window.__cmNoAgentSkew || (a.skew_x == null && a.skew_y == null)) return false;
+            const cl = (v) => Math.max(-75, Math.min(75, Number(v) || 0));
+            const kx = a.skew_x != null ? cl(a.skew_x) : n.skewX();
+            const ky = a.skew_y != null ? cl(a.skew_y) : n.skewY();
+            if (Math.abs(kx - n.skewX()) < 0.01 && Math.abs(ky - n.skewY()) < 0.01) return false;
+            const b0 = n.getClientRect({ skipShadow: true, skipStroke: true });
+            n.skewX(kx); n.skewY(ky);
+            const b1 = n.getClientRect({ skipShadow: true, skipStroke: true });
+            n.x(n.x() + (b0.x + b0.width / 2) - (b1.x + b1.width / 2));
+            n.y(n.y() + (b0.y + b0.height / 2) - (b1.y + b1.height / 2));
+            return true;
+        }
+
         // 结果里带一句提醒：元素超出框了（超出部分不显示）→ agent 自己会调小 / 换行
         function agentResult(n) {
             const info = agentInfo(n), out = { ok: true, element: info };
@@ -18662,6 +18682,7 @@ window.addEventListener('DOMContentLoaded', function () {
                 n.text(String(a.text));
                 n.setAttr('agentRole', 'text');
                 agentStyleText(n, a);
+                agentApplySkew(n, a);
                 mainLayer.add(n);
                 tr.moveToTop();
                 agentPlace(n, fr.f, a.x, a.y);
@@ -18678,6 +18699,7 @@ window.addEventListener('DOMContentLoaded', function () {
                 n.setAttr('agentRole', 'decoration');
                 if (a.width || a.height) agentResize(n, fr.f, a.width, a.height);
                 agentStyleShape(n, a);
+                agentApplySkew(n, a);
                 agentPlace(n, fr.f, a.x, a.y);
                 agentAmendHistory();
                 agentDone('加形状「' + it.name + '」', n);
@@ -18698,6 +18720,9 @@ window.addEventListener('DOMContentLoaded', function () {
                 agentDone('贴纸 ' + emoji, n);
                 return agentResult(n);
             },
+            // 2026-11-02 用户「用 agent 控制说文字的斜切没有接口」：给 AI 补上斜切（skew_x / skew_y，单位度）
+            //   跟画布上「右键 → 斜切」拖四边中点同一套 attr；斜切以节点左上角为原点，会让整块外框位移 →
+            //   这里按外框中心回补一次（同上面 rotation 的做法），x / y 仍旧是「中心点占框的比例」，模型不用自己算漂移。
             update_element(a) {
                 const n = agentNode(a.id);
                 if (!n) return { ok: false, error: '没有这个 id：' + a.id + '（用 get_canvas 看）' };
@@ -18716,6 +18741,7 @@ window.addEventListener('DOMContentLoaded', function () {
                     const b1 = n.getClientRect({ skipShadow: true, skipStroke: true });
                     n.x(n.x() + (b0.x + b0.width / 2) - (b1.x + b1.width / 2)); n.y(n.y() + (b0.y + b0.height / 2) - (b1.y + b1.height / 2));
                 }
+                agentApplySkew(n, a);                                         // 2026-11-02 斜切（度）
                 if (t === 'text' || t === 'path_text') {
                     if (a.text != null) n.text(t === 'path_text' ? String(a.text).replace(/\s*\n\s*/g, ' ') : String(a.text));
                     agentStyleText(n, a);
