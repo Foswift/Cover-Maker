@@ -29,11 +29,14 @@ jobs:
 
       - name: 打 arm64 包（Apple 芯片）
         run: |
+          # 版本号跟 package.json 走（2026-11-11：原来写死 0.1.0，打出来的包和本地对不上）
+          VER="$(node -p "require('./package.json').version")"
+          echo "打包版本 = $VER"
           npx electron-packager . "封面制作器" \
             --platform=darwin --arch=arm64 --out=dist \
             --icon=build/icon.icns \
             --app-bundle-id=com.foswift.covermaker \
-            --app-version=0.1.0 \
+            --app-version="$VER" \
             --overwrite --prune=true --asar \
             --ignore="^/(dist|tools|build)(/|\$)" --ignore="\.md\$"
 
