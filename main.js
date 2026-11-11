@@ -14080,7 +14080,8 @@ function createWindow() {
                     await A('set_platforms', { platforms: ['xiaohongshu'] });
                     const S = {};
                     const nodeOf = (id) => jsx(`(function () { var n = layerNodes().filter(function (x) { return x.getAttr('aid') === ` + JSON.stringify(String(id)) + `; })[0];
-                        return n ? { kx: Math.round(n.skewX() * 100) / 100, ky: Math.round(n.skewY() * 100) / 100 } : null; })()`);
+                        var deg = function (v) { return Math.round(Math.atan(v) * 180 / Math.PI * 100) / 100; };
+                        return n ? { kx: deg(n.skewX()), ky: deg(n.skewY()) } : null; })()`);
                     const t1 = await A('add_text', { text: '斜切标题', frame: 1, y: 0.3, size: 40, shadow: false, skew_x: 18 });
                     S.加字 = { ok: !!t1.ok, attr: t1.ok ? await nodeOf(t1.element.id) : null, 报kx: t1.element && t1.element.skew_x, 报x: t1.element && t1.element.x, 报w: t1.element && t1.element.w, 报h: t1.element && t1.element.h };
                     const up1 = await A('update_element', { id: t1.element.id, skew_x: 20, skew_y: -12 });
@@ -14658,6 +14659,42 @@ function createWindow() {
                                     if (!ok) failed.push('对齐与分布（左对齐 / 等间距 / 两个不能分布 / 非法模式拒 / 锁定拒）');
                                     return { 左对齐: okLeft, x: xs, 分布间距: [g1, g2], 两个分布: two.ok, 非法: bad.ok, 锁定: locked.ok };
                                 });
+                                // 斜切的**单位**：这个 Konva 构建的 skewX 是「切变系数」，8° 必须写成 tan(8°)=0.1405。
+                                //   写错（直接写 8）= 82.9° 巨型剪切 → 大到把字/形状拉成横贯画面的条纹（用户 Mac 实测那条）
+                                await step('斜切单位与大字号渲染', async function () {
+                                    reset();
+                                    var t = await call('add_text', { text: '招财蟹系列', frame: 1, size: 120, color: '#FFD400', shadow: false, y: 0.4 });
+                                    var id = t.element.id;
+                                    var inkOf = function (url) {
+                                        return new Promise(function (res) {
+                                            var im = new Image();
+                                            im.onload = function () {
+                                                var cv = document.createElement('canvas'); cv.width = im.width; cv.height = im.height;
+                                                var c = cv.getContext('2d'); c.drawImage(im, 0, 0);
+                                                var d = c.getImageData(0, 0, cv.width, cv.height).data, n = 0;
+                                                for (var i = 0; i < d.length; i += 8) { if (d[i] < 240 || d[i + 1] < 240 || d[i + 2] < 240) n++; }
+                                                res(n);
+                                            };
+                                            im.onerror = function () { res(-1); };
+                                            im.src = url;
+                                        });
+                                    };
+                                    var f = (await call('get_canvas')).frames[0];
+                                    var rect = { x: f.rect.x, y: f.rect.y, width: f.rect.width, height: f.rect.height };
+                                    var ink0 = await inkOf(encodeRect(rect, { w: 240, h: 320 }));
+                                    await call('update_element', { id: id, skew_x: 8 });
+                                    var ink8 = await inkOf(encodeRect(rect, { w: 240, h: 320 }));
+                                    var node = layerNodes().filter(function (n) { return n.getAttr('aid') === id; })[0];
+                                    var nativeK = node ? node.skewX() : 0;
+                                    var okUnit = Math.abs(nativeK - Math.tan(8 * Math.PI / 180)) < 0.02;
+                                    var okInk = ink0 > 100 && ink8 > ink0 * 0.7 && ink8 < ink0 * 1.4;
+                                    var back = await call('get_canvas');
+                                    var e8 = back.elements.filter(function (x) { return x.id === id; })[0];
+                                    var okRead = e8 && e8.skew_x === 8;
+                                    if (!(okUnit && okInk && okRead)) failed.push('斜切单位（8° → 系数 tan8° / 大字斜切后渲染量不塌不炸 / 读回 8 度）');
+                                    return { 系数: nativeK, 期望: Math.round(Math.tan(8 * Math.PI / 180) * 1000) / 1000, 未斜墨量: ink0, 斜8墨量: ink8, 读回: e8 && e8.skew_x };
+                                });
+
                                 await step('斜切与尺寸专用工具', async function () {
                                     reset();
                                     var t = await call('add_text', { text: 'SKEW2', frame: 1, size: 40, shadow: false });

@@ -18869,8 +18869,9 @@ window.addEventListener('DOMContentLoaded', function () {
                 o.w = r3(b.width / f.rect.width); o.h = r3(b.height / f.rect.height);
             }
             if (Math.round(n.rotation())) o.rotation = Math.round(n.rotation());
-            if (Math.round(n.skewX())) o.skew_x = Math.round(n.skewX());            // 2026-11-02 斜切（度）：agent 要能读到再复刻
-            if (Math.round(n.skewY())) o.skew_y = Math.round(n.skewY());
+            const skx = agentSkewFromNative(n.skewX()), sky = agentSkewFromNative(n.skewY());   // 内部是切变系数 → 报度数
+            if (Math.round(skx)) o.skew_x = Math.round(skx);                       // 2026-11-02 斜切（度）：agent 要能读到再复刻
+            if (Math.round(sky)) o.skew_y = Math.round(sky);
             if (o.type === 'text' || o.type === 'path_text') {
                 o.text = n.text(); o.color = n.fill(); o.size = Math.round(textShownSize(n)); o.font = n.fontFamily();
                 const lpx = agentRound2(n.letterSpacing() || 0);                  // 2026-11-02 契约：字距（像素）要能读回
@@ -19265,14 +19266,19 @@ window.addEventListener('DOMContentLoaded', function () {
         //   跟画布上「右键 → 斜切」拖四边中点同一套 attr（Konva 的 skewX / skewY，度）；斜切以节点左上角为原点，
         //   会让整块外框位移 → 这里按外框中心回补一次（同 update_element 里 rotation 的做法），
         //   x / y 仍旧是「中心点占框的比例」，模型不用自己算漂移。负对照 window.__cmNoAgentSkew。
+        // ⚠ 这个 Konva 构建的 skewX / skewY 吃的是**切变系数**（矩阵里的 tan 值），不是度数。
+        //   实测：写 0.1405（= tan 8°）→ 视觉上正好 8°；写 8（当成系数）→ 巨型剪切，元素被拉成横贯画面的黄条（用户 Mac 实测报的那条）。
+        //   对外（schema）仍然统一用**度**，进出都换算。
+        const agentSkewToNative = (deg) => Math.tan(Math.max(-89, Math.min(89, Number(deg) || 0)) * Math.PI / 180);
+        const agentSkewFromNative = (v) => Math.atan(Number(v) || 0) * 180 / Math.PI;
         function agentApplySkew(n, a) {
             if (!n || !a || window.__cmNoAgentSkew || (a.skew_x == null && a.skew_y == null)) return false;
             const cl = (v) => Math.max(-75, Math.min(75, Number(v) || 0));
-            const kx = a.skew_x != null ? cl(a.skew_x) : n.skewX();
-            const ky = a.skew_y != null ? cl(a.skew_y) : n.skewY();
-            if (Math.abs(kx - n.skewX()) < 0.01 && Math.abs(ky - n.skewY()) < 0.01) return false;
+            const kx = a.skew_x != null ? cl(a.skew_x) : agentSkewFromNative(n.skewX());
+            const ky = a.skew_y != null ? cl(a.skew_y) : agentSkewFromNative(n.skewY());
+            if (Math.abs(agentSkewToNative(kx) - n.skewX()) < 1e-4 && Math.abs(agentSkewToNative(ky) - n.skewY()) < 1e-4) return false;
             const b0 = agentBoxOf(n);
-            n.skewX(kx); n.skewY(ky);
+            n.skewX(agentSkewToNative(kx)); n.skewY(agentSkewToNative(ky));
             const b1 = agentBoxOf(n);
             n.x(n.x() + (b0.x + b0.width / 2) - (b1.x + b1.width / 2));
             n.y(n.y() + (b0.y + b0.height / 2) - (b1.y + b1.height / 2));
