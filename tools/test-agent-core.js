@@ -71,9 +71,22 @@ async function run() {
     'get_guides', 'set_guide_preferences', 'add_guide', 'remove_guide', 'clear_guides',
     'get_app_settings', 'set_theme', 'set_language'
   ];
-  const expectedToolNames = legacyNames.concat(existingAgentNames, fullAgentNames);
+  // 2026-11-11 第三批：路径文字 / 颜色工具 / 画布辅助（用户「2，5，6先接上」）
+  const parityNames = [
+    'add_text_path', 'sample_color', 'extract_palette', 'get_color_pins', 'set_color_pins', 'get_color_scheme',
+    'new_guide_layout', 'set_frame_transform'
+  ];
+  // 2026-11-11 第四批：字体库 / 贴纸库 / 自定义目标比例（用户「还有剩下的也补齐」）
+  const libraryNames = [
+    'import_fonts', 'remove_font', 'save_to_font_library',
+    'list_stickers', 'import_stickers', 'remove_sticker', 'hide_builtin_sticker', 'restore_builtin_stickers',
+    'list_custom_ratios', 'add_custom_ratio', 'rename_custom_ratio', 'remove_custom_ratio'
+  ];
+  // 2026-11-11 第五批：复刻参考图（参考图层）
+  const refNames = ['set_reference_image', 'clear_reference_image', 'measure_reference', 'compare_with_reference'];
+  const expectedToolNames = legacyNames.concat(existingAgentNames, fullAgentNames, parityNames, libraryNames, refNames);
   const actualToolNames = TOOLS.map((tool) => tool.name);
-  assert.equal(TOOLS.length, 43, 'Agent/MCP tool surface has exactly 43 tools');
+  assert.equal(TOOLS.length, expectedToolNames.length, 'Agent/MCP tool count follows the shared definition list');
   assert.equal(new Set(actualToolNames).size, TOOLS.length, 'Agent/MCP tool names are unique');
   assert.deepEqual([...actualToolNames].sort(), [...expectedToolNames].sort(),
     'Agent/MCP tool set exactly preserves the existing 22 tools and adds the new 21 tools');
@@ -385,10 +398,13 @@ async function run() {
   assert.equal(cancel.annotations.readOnlyHint, false);
 
   const setPlatforms = TOOLS.find((tool) => tool.name === 'set_platforms');
-  assert.deepEqual(
-    createCover.inputSchema.properties.platforms.items.enum,
-    setPlatforms.inputSchema.properties.platforms.items.enum
-  );
+  // 2026-11-11：set_platforms 还要能选「自定义目标比例」（custom_ratio_xxx，用户自己加的）→ 不能再写死枚举
+  const spProp = setPlatforms.inputSchema.properties.platforms;
+  assert.equal(spProp.items.enum, undefined, 'set_platforms 的平台参数不再写死枚举');
+  createCover.inputSchema.properties.platforms.items.enum.forEach((k) => {
+    assert.ok(String(spProp.description || '').indexOf(k) >= 0, 'set_platforms 说明里要列出内置平台 ' + k);
+  });
+  assert.ok(String(spProp.description || '').indexOf('custom_ratio_') >= 0, 'set_platforms 说明里要提到自定义目标 key');
 
   const applyTemplate = TOOLS.find((tool) => tool.name === 'apply_template');
   assert.equal(applyTemplate.annotations.readOnlyHint, false);

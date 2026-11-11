@@ -59,7 +59,10 @@ module.exports = function createMcp(deps) {
     }
 
     async function exportTo(args) {
-        const r = await callRenderer('render_export', {});
+        // 2026-11-11：agent 单框 / 自定义像素导出。三个参数都不给 = 和改前完全一样（create_cover 走的就是这条）
+        const r = await callRenderer('render_export', {
+            frames: args && args.frames, width: args && args.width, height: args && args.height
+        });
         if (!r.ok) return r;
         let dir = String((args && args.dir) || '').trim();
         if (!dir) dir = path.join(app.getPath('pictures'), '封面制作器导出');
@@ -144,7 +147,7 @@ module.exports = function createMcp(deps) {
                     return ok({ protocolVersion: PROTOCOLS.indexOf(want) >= 0 ? want : PROTOCOLS[0],
                                 capabilities: { tools: { listChanged: false } },
                                 serverInfo: { name: SERVER_NAME, title: '封面制作器', version: app.getVersion() },
-                                instructions: '封面制作器：给抖音 / 小红书 / B站等平台做视频封面。最省事：create_cover 一次做完（标题 + 平台 + 风格 + 可选图片 → 自动排版、截图、导出，返回文件路径）。用户给了参考图：先分清背景、主体、标题、副标题、贴纸/装饰及谁遮住谁。如果主体和任一文字/贴纸重叠，必须自动调用 extract_subject，不要等用户再要求抠图；原图固定在最底层。主体通常在上，但必须逐个判断每个重叠元素：覆盖主体的放主体上方，被主体遮挡的放主体下方。细调时先 get_canvas 读取每个独立元素的 role / layer_rank / z_index；改变前后关系必须整批调用 set_layer_order（bottom_to_top），不要靠逐个 to_front 猜顺序。参考图上有文字时，必须先判断参考图用的字体（认不出名字就写风格最接近的常见字体名），调用 check_fonts；返回里有 tell_user 就必须先停下来，把那句话告诉用户，等用户选好（下载安装 / 导入这个字体，或用哪个相近字体）再继续做，不要先做完再说，也不要自己悄悄换字体。坐标都按框的比例（0~1）给。' });
+                                instructions: '封面制作器：给抖音 / 小红书 / B站等平台做视频封面。最省事：create_cover 一次做完（标题 + 平台 + 风格 + 可选图片 → 自动排版、截图、导出，返回文件路径）。用户给了参考图：先分清背景、主体、标题、副标题、贴纸/装饰及谁遮住谁。如果主体和任一文字/贴纸重叠，必须自动调用 extract_subject，不要等用户再要求抠图；原图固定在最底层。主体通常在上，但必须逐个判断每个重叠元素：覆盖主体的放主体上方，被主体遮挡的放主体下方。用户说“照这张图做”时走复刻流程：set_reference_image 把图交给软件 → measure_reference 拿背景/色块/文字区的 0~1 坐标和字号 → 一次建好 → compare_with_reference 拿 similarity 与 worst（color/position/missing），只改 worst 点名的元素，最多 3 轮，similarity ≥ 0.9 或连续两轮提升 < 0.01 就停并报分数，最后 clear_reference_image 再导出。细调时先 get_canvas 读取每个独立元素的 role / layer_rank / z_index；改变前后关系必须整批调用 set_layer_order（bottom_to_top），不要靠逐个 to_front 猜顺序。参考图上有文字时，必须先判断参考图用的字体（认不出名字就写风格最接近的常见字体名），调用 check_fonts；返回里有 tell_user 就必须先停下来，把那句话告诉用户，等用户选好（下载安装 / 导入这个字体，或用哪个相近字体）再继续做，不要先做完再说，也不要自己悄悄换字体。坐标都按框的比例（0~1）给。' });
                 }
                 case 'ping': return ok({});
                 case 'tools/list': return ok({ tools: TOOLS });
@@ -221,9 +224,20 @@ module.exports = function createMcp(deps) {
             '',
             '支持 MCP 的客户端也可以直接连标准 MCP 端点：`' + base + '/mcp`（Streamable HTTP，请求头带同样的 Authorization）。',
             '',
+            '## 复刻参考图（用户说“照着这张图做”就走这条）',
+            '',
+            '0. `set_reference_image {path, opacity?:0.5, mode?:"overlay"|"side"}` 把参考图交给软件（只作对照，不进出品）',
+            '1. `measure_reference` 把参考图读成数据：`background`（背景色）、`regions[]`（色块 bbox + 纯色/渐变 + 颜色）、`text_blocks[]`（文字区 bbox + `est_size` 估算字号）、`palette[]` 主色。**这些坐标已经是 0~1 的框比例，直接拿去当 x / y / w / h**',
+            '2. 按数据一次建：`set_platforms` → 背景（`add_shape` 铺满 / `add_image` 照片）→ 形状 / 贴纸 → `add_text` / `add_text_path`（逐字排版或沿曲线），字体用 `check_fonts` 确认，缺字体把 `tell_user` 转告用户再继续',
+            '3. `compare_with_reference {grid:8|12}` 拿 `similarity`（0~1）和 `worst[]`（偏差最大的 5 块：`delta_e` + `kind` = color 颜色不对 / position 位置偏了 / missing 少了东西 + `ref_color` / `cur_color`）',
+            '4. **只改 worst 里点名的那几处**：颜色差 → `update_element {color}`；位置差 → `x / y`；缺元素 → `add_*`；然后回到第 3 步。最多 3 轮',
+            '5. 收敛口径：`similarity ≥ 0.9`，或连续两轮提升 < 0.01 就停 → 把「最终 similarity + 改了哪几处 + 还差什么」报给用户；最后 `clear_reference_image` 再 `export_images`',
+            '',
+            '**用户给了参考图、但只想快速出一版**：也可以 `create_cover` + `custom_style` 出初稿，再按上面第 1~4 步用量测/比对数值修（比 `screenshot` 目测稳得多）。',
+            '',
             '## 最省事：一次做完',
             '',
-            '**用户给了参考图（想照着某张图的风格做）**：先把参考图拆成独立层：背景、主体、标题、副标题、贴纸 / 装饰，并明确谁在谁上面、谁遮住谁。然后**仍然先用 `create_cover`**，把配色和版式填进 `custom_style` 出第一版；再 `get_canvas` 读取每个元素的 `role / layer_rank / z_index`，用 `set_layer_order` 一次性写清层序，最后 `screenshot` 对比参考图。不要靠创建顺序或反复 `to_front` 猜图层。',
+            '**用户给了参考图（想照着某张图的风格做）**：先把参考图拆成独立层：背景、主体、标题、副标题、贴纸 / 装饰，并明确谁在谁上面、谁遮住谁。有 `set_reference_image` + `measure_reference` 时**优先走上面的「复刻参考图」流程**（坐标是量出来的，不是猜的）；没有参考图文件时再用 `create_cover` 出初稿 + `screenshot` 对比。不要靠创建顺序或反复 `to_front` 猜图层。',
             '',
             '**参考图存在主体遮挡（人物 / 商品与文字或贴纸重叠）**：必须自动调用 `extract_subject`，不要等用户再说“抠图”。原图固定在最底层并完整保留；主体透明层通常在上。随后必须逐个判断每个重叠文字 / 贴纸：被主体遮挡的放在主体下方，覆盖主体的放在主体上方。纯粹不重叠的画面不用抠主体。`create_cover` 可先加 `subject_front: true` 完成“主体压住全部文字”的常见情况；若参考图同时有贴纸压住主体，再 `get_canvas` 并用 `set_layer_order` 按“原图 → 主体下元素 → 主体 → 主体上元素”整批校正。参考图人物有一圈白边时填 `custom_style.subject_outline_color / subject_outline_width`。抠主体只在 Mac（macOS 14+）上能用，失败会在 warnings 里说明。',
             '',

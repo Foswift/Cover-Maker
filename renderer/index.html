@@ -10329,7 +10329,7 @@ window.addEventListener('DOMContentLoaded', function () {
                 const im = new Image();
                 im.onload = () => res({ ok: true, im: im, w: im.naturalWidth, h: im.naturalHeight });
                 im.onerror = () => res({ ok: false });
-                im.src = freshFileUrl(p);
+                im.src = /^data:/i.test(String(p)) ? String(p) : freshFileUrl(p);   // §REF：data URL 直接给（自检夹具不用落盘）
             });
         }
 
@@ -10842,11 +10842,11 @@ window.addEventListener('DOMContentLoaded', function () {
 
         // 菜单「字体 → 导入字体文件…」：主进程原生多选对话框 → 拷进 userData/fonts/ → 立刻注册 → 刷下拉 → 状态栏说一句
         //   （§0.76 的教训：能力做完必须有个**用户看得见的后果**，否则就是「点了没反应」）
-        async function importFontsToLibrary() {
+        async function importFontsToLibrary(paths) {
             const br = fontBridge();
             if (!br || !br.import) { hintStatus('只有桌面版才能导入字体'); return { ok: false }; }
             let res = null;
-            try { res = await br.import(); } catch (e) { hintStatus('导入字体失败：' + e.message); return { ok: false }; }
+            try { res = await br.import(paths); } catch (e) { hintStatus('导入字体失败：' + e.message); return { ok: false }; }   // paths 不传 = 弹对话框
             if (!res || res.canceled) { hintStatus('没选字体文件，什么都没做'); return { ok: false, canceled: true }; }
             FONTS.imported = (res.list || FONTS.imported);
             const added = res.added || [], skipped = res.skipped || [];
@@ -12288,6 +12288,350 @@ window.addEventListener('DOMContentLoaded', function () {
         })();
         window.__cmEyedrop = { enter: eyedropEnter, exit: eyedropExit, state: EYE, sample: eyeSampleAt };
 
+        // ==================== §REF（2026-11-11）：参考图层（AI 复刻参考图用）====================
+        //   用户口径「希望通过这个软件让 AI 自己复刻参考图」。参考图 = 对照用的背景板：
+        //     · overlay = 半透明叠在画布上（对位用）；side = 贴在窗口右侧的独立面板（不挡画布）；
+        //     · **永远不进成品**：withHiddenDecor 里连它一起藏，stage._toKonvaCanvas 也藏（截图 / 导出 / 吸管取样都取不到它）；
+        //     · 不进 layerNodes / captureState / 模板 / get_canvas.elements —— 只在 get_canvas.reference 里单独报；
+        //     · 不落盘（重启就没了）。
+        const REF = { on: false, path: '', name: '', opacity: 0.5, mode: 'overlay', layer: null, node: null, dom: null, w: 0, h: 0 };
+        function refLayer() {
+            if (REF.layer || !stage) return REF.layer;
+            REF.layer = new Konva.Layer({ name: '参考图层', listening: false });
+            stage.add(REF.layer);
+            return REF.layer;
+        }
+        function refLayout() {
+            if (!stage || !REF.layer) return;
+            if (!REF.on || !REF.node) { if (REF.layer) { REF.layer.destroyChildren(); REF.layer.batchDraw(); } return; }
+            const W = stage.width(), H = stage.height();
+            const k = Math.min(W / Math.max(1, REF.w), H / Math.max(1, REF.h));      // contain：整张都看得见
+            REF.node.width(REF.w * k); REF.node.height(REF.h * k);
+            REF.node.x((W - REF.w * k) / 2); REF.node.y((H - REF.h * k) / 2);
+            REF.node.visible(REF.mode === 'overlay');
+            REF.layer.batchDraw();
+        }
+        function refSideDom(on) {
+            let el = document.getElementById('cmRefSide');
+            if (!on) { if (el) el.style.display = 'none'; return; }
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'cmRefSide';
+                el.title = '参考图（不进出品）';
+                Object.assign(el.style, { position: 'fixed', zIndex: '900', right: '14px', top: '84px', maxWidth: '36vw', maxHeight: '76vh',
+                    padding: '6px', background: '#fff', border: '1px solid #d9d9d9', borderRadius: '8px', boxShadow: '0 6px 20px rgba(0,0,0,.14)', overflow: 'hidden' });
+                const img = document.createElement('img');
+                Object.assign(img.style, { display: 'block', maxWidth: '100%', maxHeight: 'calc(76vh - 12px)', objectFit: 'contain' });
+                const btn = document.createElement('button');
+                btn.type = 'button'; btn.textContent = '×'; btn.title = '关掉参考图';
+                Object.assign(btn.style, { position: 'absolute', right: '3px', top: '1px', border: '0', background: 'transparent',
+                    cursor: 'pointer', fontSize: '15px', lineHeight: '16px', color: '#666' });
+                btn.onclick = () => { clearReferenceImage(); };
+                el.appendChild(img); el.appendChild(btn);
+                document.body.appendChild(el);
+            }
+            const img = el.querySelector('img');
+            img.src = /^data:/i.test(REF.path) ? REF.path : freshFileUrl(REF.path);
+            img.alt = REF.name || '参考图';
+            el.style.display = 'block';
+            REF.dom = el;
+        }
+        async function setReferenceImage(a) {
+            const p = String(a && a.path || '').trim();
+            if (!p) return { ok: false, error: 'path 不能是空的（参考图的绝对路径）' };
+            const ld = await loadImageFile(p);
+            if (!ld || !ld.ok) return { ok: false, error: '这张参考图读不出来：' + p };
+            const op = a.opacity == null ? 0.5 : Math.max(0.05, Math.min(1, Number(a.opacity) || 0.5));
+            const mode = a.mode === 'side' ? 'side' : 'overlay';
+            const L = refLayer();
+            if (!L) return { ok: false, error: '画布还没准备好' };
+            L.destroyChildren();
+            REF.on = true; REF.path = p; REF.name = /^data:/i.test(p) ? '参考图（内存）' : imgFileName(p); REF.w = ld.w; REF.h = ld.h;
+            REF.opacity = op; REF.mode = mode;
+            REF.node = new Konva.Image({ image: ld.im, opacity: op, listening: false, name: '参考图' });
+            L.add(REF.node);
+            refLayout();
+            refSideDom(mode === 'side');
+            hintStatus('参考图已放好（' + (mode === 'side' ? '右侧对照' : '叠在画布上，不透明度 ' + Math.round(op * 100) + '%') + '，不进出品）');
+            return { ok: true, reference: { name: REF.name, path: REF.path, opacity: REF.opacity, mode: REF.mode, width: REF.w, height: REF.h } };
+        }
+        function clearReferenceImage() {
+            if (!REF.on) return false;
+            REF.on = false; REF.path = ''; REF.name = ''; REF.node = null; REF.w = 0; REF.h = 0;
+            if (REF.layer) { REF.layer.destroyChildren(); REF.layer.batchDraw(); }
+            refSideDom(false);
+            hintStatus('参考图已关掉');
+            return true;
+        }
+        function refInfo() {
+            return REF.on ? { name: REF.name, path: REF.path, opacity: REF.opacity, mode: REF.mode, width: REF.w, height: REF.h } : null;
+        }
+        // ==================== §REF 量测 / 比对（复刻 Phase 1 第 2、3 件）====================
+        //   两张图（参考图 / 当前画布）统一缩到同一个小画布上算，全部返回图片自身比例 0~1；
+        //   字号额外按第一块框的像素高度换算成「画布像素」，agent 可以直接当 size 用。
+        function refSourceImage() {
+            return new Promise((res) => {
+                if (!REF.on || !REF.path) return res(null);
+                const im = new Image();
+                im.onload = () => res(im);
+                im.onerror = () => res(null);
+                im.src = /^data:/i.test(REF.path) ? REF.path : freshFileUrl(REF.path);
+            });
+        }
+        function refRgbHex(c) { return '#' + [0, 1, 2].map((i) => Math.max(0, Math.min(255, Math.round(c[i]))).toString(16).padStart(2, '0')).join('').toUpperCase(); }
+        function refDist(a, b) { const dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2]; return Math.sqrt(2 * dr * dr + 4 * dg * dg + 3 * db * db) / 3; }   // 0~255 的近似感知距离
+        function refCanvasOf(im, maxW) {
+            const k = Math.min(1, maxW / Math.max(1, im.naturalWidth));
+            const w = Math.max(8, Math.round(im.naturalWidth * k)), h = Math.max(8, Math.round(im.naturalHeight * k));
+            const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+            const ctx = cv.getContext('2d');
+            ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, w, h);            // 透明区按白底算（不然 getImageData 是 0,0,0）
+            ctx.drawImage(im, 0, 0, w, h);
+            return { cv: cv, w: w, h: h, data: ctx.getImageData(0, 0, w, h).data };
+        }
+        function refTargetFrame() {
+            const fs = agentFrames();
+            return fs.length ? fs[0] : null;
+        }
+        // 参考图 → 数据：背景 / 色块（bbox + 纯色或渐变）/ 文字区（bbox + 估算字号）/ 主色
+        async function measureReference(a) {
+            if (!REF.on) return { ok: false, error: '还没有设参考图：先 set_reference_image {path}' };
+            const im = await refSourceImage();
+            if (!im) return { ok: false, error: '参考图读不出来：' + REF.path };
+            const maxW = Math.max(120, Math.min(480, Math.round(Number(a.max_width) || 360)));
+            const sc = refCanvasOf(im, maxW), W = sc.w, H = sc.h, D = sc.data, N = W * H;
+            const at = (i) => { const j = i * 4; return [D[j], D[j + 1], D[j + 2]]; };
+            const bkey = (c) => ((c[0] >> 4) << 8) | ((c[1] >> 4) << 4) | (c[2] >> 4);
+            const f = refTargetFrame();
+            const frameH = f && f.rect ? f.rect.height : H;
+
+            // ① 背景 = 外圈 6% 像素的众数桶均值
+            const band = Math.max(2, Math.round(Math.min(W, H) * 0.06));
+            let bgB = null;
+            const bmap = new Map();
+            for (let y = 0; y < H; y++) {
+                for (let x = 0; x < W; x++) {
+                    if (!(x < band || y < band || x >= W - band || y >= H - band)) continue;
+                    const c = at(y * W + x), k = bkey(c), b = bmap.get(k) || { n: 0, r: 0, g: 0, b: 0 };
+                    b.n++; b.r += c[0]; b.g += c[1]; b.b += c[2]; bmap.set(k, b);
+                    if (!bgB || b.n > bgB.n) bgB = b;
+                }
+            }
+            const bg = bgB ? [bgB.r / bgB.n, bgB.g / bgB.n, bgB.b / bgB.n] : [255, 255, 255];
+
+            // ② 色块：按 4bit 通道分桶 → 取够大的桶 → 连通域 → bbox / 纯色或渐变
+            const sums = new Map();
+            for (let i = 0; i < N; i++) { const c = at(i), k = bkey(c), b = sums.get(k) || { n: 0, r: 0, g: 0, b: 0 }; b.n++; b.r += c[0]; b.g += c[1]; b.b += c[2]; sums.set(k, b); }
+            const maxRegions = Math.max(1, Math.min(24, Math.round(Number(a.max_regions) || 12)));
+            const cands = [...sums.entries()].map(([k, b]) => ({ k: k, n: b.n, c: [b.r / b.n, b.g / b.n, b.b / b.n] }))
+                .filter((o) => o.n >= N * 0.004 && refDist(o.c, bg) > 14)
+                .sort((A, B) => B.n - A.n).slice(0, maxRegions * 3);
+            const regions = [];
+            const mask = new Uint8Array(N), seen = new Uint8Array(N);
+            for (const o of cands) {
+                if (regions.length >= maxRegions) break;
+                mask.fill(0);
+                for (let i = 0; i < N; i++) { if (bkey(at(i)) === o.k) mask[i] = 1; }
+                seen.fill(0);
+                for (let i = 0; i < N; i++) {
+                    if (!mask[i] || seen[i]) continue;
+                    const stack = [i]; seen[i] = 1;
+                    let x0 = W, y0 = H, x1 = -1, y1 = -1, cnt = 0, sr = 0, sg = 0, sb = 0;
+                    while (stack.length) {
+                        const p = stack.pop(), xx = p % W, yy = (p - xx) / W;
+                        cnt++; if (xx < x0) x0 = xx; if (xx > x1) x1 = xx; if (yy < y0) y0 = yy; if (yy > y1) y1 = yy;
+                        const c = at(p); sr += c[0]; sg += c[1]; sb += c[2];
+                        if (xx > 0 && mask[p - 1] && !seen[p - 1]) { seen[p - 1] = 1; stack.push(p - 1); }
+                        if (xx < W - 1 && mask[p + 1] && !seen[p + 1]) { seen[p + 1] = 1; stack.push(p + 1); }
+                        if (yy > 0 && mask[p - W] && !seen[p - W]) { seen[p - W] = 1; stack.push(p - W); }
+                        if (yy < H - 1 && mask[p + W] && !seen[p + W]) { seen[p + W] = 1; stack.push(p + W); }
+                    }
+                    if (cnt < N * 0.004) continue;
+                    const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+                    // 渐变：左右三分区 / 上下三分区的均色差（取大的那组）
+                    const seg = (fx0, fx1, fy0, fy1) => {
+                        let n = 0, r = 0, g = 0, b = 0;
+                        for (let y = Math.max(0, fy0); y <= Math.min(H - 1, fy1); y++) {
+                            for (let x = Math.max(0, fx0); x <= Math.min(W - 1, fx1); x++) {
+                                const p = y * W + x; if (!mask[p]) continue;
+                                const c = at(p); n++; r += c[0]; g += c[1]; b += c[2];
+                            }
+                        }
+                        return n ? [r / n, g / n, b / n] : null;
+                    };
+                    const l = seg(x0, x0 + Math.max(1, Math.floor(bw / 3)), y0, y1);
+                    const r = seg(x1 - Math.max(1, Math.floor(bw / 3)), x1, y0, y1);
+                    const t = seg(x0, x1, y0, y0 + Math.max(1, Math.floor(bh / 3)));
+                    const bb = seg(x0, x1, y1 - Math.max(1, Math.floor(bh / 3)), y1);
+                    const dLR = (l && r) ? refDist(l, r) : 0, dTB = (t && bb) ? refDist(t, bb) : 0;
+                    const gradCols = dLR >= dTB && dLR > 26 ? [l, r] : (dTB > 26 ? [t, bb] : null);
+                    regions.push({
+                        bbox: { x: +(x0 / W).toFixed(4), y: +(y0 / H).toFixed(4), w: +(bw / W).toFixed(4), h: +(bh / H).toFixed(4) },
+                        area_ratio: +(cnt / N).toFixed(4),
+                        fill: gradCols ? 'gradient' : 'solid',
+                        color: gradCols ? refRgbHex(gradCols[0]) : refRgbHex([sr / cnt, sg / cnt, sb / cnt]),
+                        colors: gradCols ? [refRgbHex(gradCols[0]), refRgbHex(gradCols[1])] : undefined,
+                        angle: gradCols ? (dLR >= dTB ? 0 : 90) : undefined
+                    });
+                }
+            }
+            regions.sort((A, B) => B.area_ratio - A.area_ratio);
+
+            // ③ 文字候选：强梯度像素 → 膨胀 2px → 连通域（宽高比 > 1.15、高度 1.5%~30%）
+            const lum = new Float32Array(N);
+            for (let i = 0; i < N; i++) { const c = at(i); lum[i] = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]; }
+            const edge = new Uint8Array(N);
+            for (let y = 0; y < H - 1; y++) {
+                for (let x = 0; x < W - 1; x++) {
+                    const p = y * W + x;
+                    const gx = Math.abs(lum[p + 1] - lum[p]), gy = Math.abs(lum[p + W] - lum[p]);
+                    if (gx + gy > 26) edge[p] = 1;
+                }
+            }
+            const dil = new Uint8Array(N);
+            for (let y = 0; y < H; y++) {
+                for (let x = 0; x < W; x++) {
+                    if (!edge[y * W + x]) continue;
+                    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+                        const xx = x + dx, yy = y + dy;
+                        if (xx >= 0 && yy >= 0 && xx < W && yy < H) dil[yy * W + xx] = 1;
+                    }
+                }
+            }
+            const tb = [];
+            const seen2 = new Uint8Array(N);
+            for (let i = 0; i < N; i++) {
+                if (!dil[i] || seen2[i]) continue;
+                const stack = [i]; seen2[i] = 1;
+                let x0 = W, y0 = H, x1 = -1, y1 = -1, cnt = 0;
+                while (stack.length) {
+                    const p = stack.pop(), xx = p % W, yy = (p - xx) / W;
+                    cnt++; if (xx < x0) x0 = xx; if (xx > x1) x1 = xx; if (yy < y0) y0 = yy; if (yy > y1) y1 = yy;
+                    if (xx > 0 && dil[p - 1] && !seen2[p - 1]) { seen2[p - 1] = 1; stack.push(p - 1); }
+                    if (xx < W - 1 && dil[p + 1] && !seen2[p + 1]) { seen2[p + 1] = 1; stack.push(p + 1); }
+                    if (yy > 0 && dil[p - W] && !seen2[p - W]) { seen2[p - W] = 1; stack.push(p - W); }
+                    if (yy < H - 1 && dil[p + W] && !seen2[p + W]) { seen2[p + W] = 1; stack.push(p + W); }
+                }
+                const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+                const area = bw * bh / N;
+                if (bw / Math.max(1, bh) < 1.15 || area < 0.0006 || area > 0.3 || bh / H < 0.015 || bh / H > 0.32) continue;
+                // 墨迹密度 + 边框环占比：实心矩形的四条边会被梯度图连成一圈 → 环占比高、墨迹稀
+                //   （用户场景实测：红/蓝色块的四边原来被误判成「文字」，字号读出 88 而不是 31）
+                let ecnt = 0, ring = 0;
+                for (let yy = y0; yy <= y1; yy++) {
+                    for (let xx = x0; xx <= x1; xx++) {
+                        const p2 = yy * W + xx;
+                        if (!seen2[p2] || !edge[p2]) continue;
+                        ecnt++;
+                        if (xx - x0 <= 3 || x1 - xx <= 3 || yy - y0 <= 3 || y1 - yy <= 3) ring++;
+                    }
+                }
+                const ink = ecnt / (bw * bh), ringRatio = ecnt ? ring / ecnt : 1;
+                if (ink < 0.12 || ink > 0.8 || ringRatio > 0.55) continue;      // 不是字：要么太稀，要么集中在边框上
+                tb.push({
+                    bbox: { x: +(x0 / W).toFixed(4), y: +(y0 / H).toFixed(4), w: +(bw / W).toFixed(4), h: +(bh / H).toFixed(4) },
+                    // 字号估算：bbox 高度里含着膨胀 2px + 抗锯齿 2px（分析空间），先扣掉再按「大写字高 ≈ 0.72 em」换算
+                    est_size: Math.max(8, Math.round((bh - Math.max(2, Math.round(6 * H / 480))) / 0.72 / H * frameH)),
+                    fill_ratio: +ink.toFixed(3)
+                });
+            }
+            tb.sort((A, B) => A.bbox.y - B.bbox.y);
+
+            // ④ 主色（k-means，k ≤ 8）
+            const K = Math.min(8, Math.max(2, Math.round(Number(a.palette) || 6)));
+            const pts = [];
+            for (let i = 0; i < N; i += 3) pts.push(at(i));
+            let cents = [];
+            for (let i = 0; i < K; i++) cents.push(pts[Math.floor(pts.length * (i + 0.5) / K)].slice());
+            for (let it = 0; it < 6; it++) {
+                const acc = cents.map(() => ({ n: 0, r: 0, g: 0, b: 0 }));
+                pts.forEach((c) => {
+                    let bi = 0, bd = Infinity;
+                    cents.forEach((m, i) => { const d = refDist(c, m); if (d < bd) { bd = d; bi = i; } });
+                    const a2 = acc[bi]; a2.n++; a2.r += c[0]; a2.g += c[1]; a2.b += c[2];
+                });
+                cents = acc.map((a2, i) => a2.n ? [a2.r / a2.n, a2.g / a2.n, a2.b / a2.n] : cents[i]);
+            }
+            const palette = cents.map(refRgbHex).filter((v, i, arr) => arr.indexOf(v) === i);
+
+            return { ok: true, size: { w: im.naturalWidth, h: im.naturalHeight }, aspect: +(im.naturalWidth / im.naturalHeight).toFixed(4),
+                     background: refRgbHex(bg), palette: palette, regions: regions, text_blocks: tb,
+                     frame: f ? f.no : null, frame_px: f ? { w: Math.round(f.rect.width), h: Math.round(f.rect.height) } : null,
+                     note: '坐标都是占参考图宽/高的比例（0~1），直接当框比例用；est_size 是按第 1 块框像素高度换算的字号（画布像素）。' };
+        }
+        // 当前画布（某块框 / 整块画布）→ 小画布
+        function refCanvasSnapshot() {
+            const f = refTargetFrame();
+            const rect = f && f.rect ? { x: f.rect.x, y: f.rect.y, width: f.rect.width, height: f.rect.height }
+                                     : { x: 0, y: 0, width: stage.width(), height: stage.height() };
+            let cv = null;
+            withHiddenDecor(() => { cv = stage.toCanvas({ x: rect.x, y: rect.y, width: rect.width, height: rect.height, pixelRatio: 1 }); });
+            return { cv: cv, rect: rect, frame: f ? f.no : null };
+        }
+        // 画布 vs 参考图：相似度 + 偏差最大的几块（颜色差 / 位置差 / 缺元素）
+        async function compareWithReference(a) {
+            if (!REF.on) return { ok: false, error: '还没有设参考图：先 set_reference_image {path}' };
+            const im = await refSourceImage();
+            if (!im) return { ok: false, error: '参考图读不出来：' + REF.path };
+            const grid = Math.max(4, Math.min(24, Math.round(Number(a.grid) || 8)));
+            const W = 240, H = Math.max(8, Math.round(W * im.naturalHeight / Math.max(1, im.naturalWidth)));
+            const ref = refCanvasOf(im, W);
+            const cur = refCanvasSnapshot();
+            // 画布 → 同尺寸：先铺白底（成品是白底，透明像素不能按 0,0,0 算）
+            const cv2 = document.createElement('canvas'); cv2.width = W; cv2.height = H;
+            const c2 = cv2.getContext('2d'); c2.fillStyle = '#FFFFFF'; c2.fillRect(0, 0, W, H); c2.drawImage(cur.cv, 0, 0, W, H);
+            const d2 = c2.getImageData(0, 0, W, H).data;
+            // 每格均色
+            const gw = W / grid, gh = H / grid;
+            const cellOf = (data, gx, gy) => {
+                const x0 = Math.floor(gx * gw), x1 = Math.min(W, Math.floor((gx + 1) * gw));
+                const y0 = Math.floor(gy * gh), y1 = Math.min(H, Math.floor((gy + 1) * gh));
+                let n = 0, r = 0, g = 0, b = 0, mn = 255, mx = 0;
+                for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+                    const j = (y * W + x) * 4; r += data[j]; g += data[j + 1]; b += data[j + 2]; n++;
+                    const l = 0.299 * data[j] + 0.587 * data[j + 1] + 0.114 * data[j + 2];
+                    if (l < mn) mn = l; if (l > mx) mx = l;
+                }
+                return n ? { c: [r / n, g / n, b / n], flat: (mx - mn) < 12 } : { c: [255, 255, 255], flat: true };
+            };
+            const A = [], B = [];
+            for (let gy = 0; gy < grid; gy++) for (let gx = 0; gx < grid; gx++) { A.push(cellOf(ref.data, gx, gy)); B.push(cellOf(d2, gx, gy)); }
+            let sum = 0;
+            const cells = [];
+            for (let i = 0; i < A.length; i++) {
+                const dE = refDist(A[i].c, B[i].c);
+                sum += dE;
+                const gx = i % grid, gy = (i - gx) / grid;
+                cells.push({ i: i, gx: gx, gy: gy, dE: dE, bbox: { x: +(gx / grid).toFixed(4), y: +(gy / grid).toFixed(4), w: +(1 / grid).toFixed(4), h: +(1 / grid).toFixed(4) },
+                             ref_color: refRgbHex(A[i].c), cur_color: refRgbHex(B[i].c) });
+            }
+            const mean = sum / Math.max(1, cells.length);
+            const similarity = Math.max(0, Math.min(1, 1 - mean / 120));
+            // 位置差：同格里差得远，但相邻格的参考色和它更像 → 判为“位置/顺序不对”
+            const near = (gx, gy) => {
+                let best = null;
+                for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+                    if (!dx && !dy) continue;
+                    const x = gx + dx, y = gy + dy;
+                    if (x < 0 || y < 0 || x >= grid || y >= grid) continue;
+                    const o = B[y * grid + x], d = refDist(A[gy * grid + gx].c, o.c);
+                    if (!best || d < best.d) best = { d: d, dx: dx, dy: dy };
+                }
+                return best;
+            };
+            const worst = cells.slice().sort((p, q) => q.dE - p.dE).slice(0, 5).map((o) => {
+                let kind = 'color', hint = '';
+                const n = near(o.gx, o.gy);
+                if (o.dE > 40 && n && n.d < o.dE * 0.5) { kind = 'position'; hint = '画布这块的颜色在另一格，整体偏了 ' + (-n.dx) + ' 格横向 / ' + (-n.dy) + ' 格纵向'; }
+                else if (o.dE > 40 && B[o.i].flat && !A[o.i].flat) { kind = 'missing'; hint = '参考图这块有内容，画布这里是空的'; }
+                return { bbox: o.bbox, delta_e: Math.round(o.dE * 10) / 10, kind: kind, hint: hint, ref_color: o.ref_color, cur_color: o.cur_color };
+            });
+            return { ok: true, similarity: Math.round(similarity * 1000) / 1000, mean_delta: Math.round(mean * 10) / 10,
+                     grid: grid, worst: worst, frame: cur.frame };
+        }
+        window.__cmRef = { state: REF, set: setReferenceImage, clear: clearReferenceImage, info: refInfo, measure: measureReference, compare: compareWithReference };   // 自检用
+        window.addEventListener('resize', () => { if (typeof refLayout === 'function') refLayout(); });
+
         // ==================== §4.0 颜色板块的「应用颜色」出口（renderer/colors.js 调它）====================
         //   点色板上的色块 / 双击挑色槽 → 应用到**当前选中的元素**：
         //     · 文字 / 文字组 / 表情贴纸（Konva.Text）→ 文字色（走右栏文字属性同一条路 applyTextProps：「改样式」选了只改第几段也照样生效、能撤销）；
@@ -13506,7 +13850,7 @@ window.addEventListener('DOMContentLoaded', function () {
             if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name)) name = '_' + name;
             return name;
         }
-        function exportPlan() {
+        function exportPlan(opts) {
             const frames = computeFrames();
             if (!frames.length) {
                 return [{
@@ -13515,12 +13859,26 @@ window.addEventListener('DOMContentLoaded', function () {
                     size: null
                 }];
             }
-            return frames.map((f) => ({
-                name: exportSafeBaseName(PLATFORMS[f.key].name) + '-' + (f.size.w === f.size.h ? '方形' : (orientOf(f.size) === 'v' ? '竖版' : '横版')) + '-' + f.size.w + 'x' + f.size.h + '.png',   // 自定义名称里的冒号等 Windows 禁用字符只在文件名中转为下划线
-                rect: { x: f.rect.x, y: f.rect.y, width: f.rect.width, height: f.rect.height },
-                size: f.size,
-                frameKey: f.key + '#' + f.sizeIndex
-            }));
+            // 2026-11-11：agent 的单框导出 / 自定义像素导出。**不传 = 和改前完全一样**（create_cover 走的还是这条）
+            const nums = frameNumberList(frames);
+            const only = (opts && Array.isArray(opts.frames) && opts.frames.length)
+                ? opts.frames.map((k) => Math.round(Number(k))).filter((k) => k > 0) : null;
+            const cw = opts && opts.width != null ? Math.round(Number(opts.width)) : 0;
+            const ch = opts && opts.height != null ? Math.round(Number(opts.height)) : 0;
+            const custom = (cw >= 64 && ch >= 64) ? { w: Math.min(8000, cw), h: Math.min(8000, ch) } : null;
+            return frames.map((f) => {
+                const num = nums.find((x) => x.gk === f.side + '|' + f.ratio.toFixed(4)) || null;
+                const base = exportSafeBaseName(PLATFORMS[f.key].name);
+                const size = custom || f.size;
+                return {
+                    frame: num ? num.no : null,
+                    name: custom ? (base + '-' + custom.w + 'x' + custom.h + '.png')
+                                 : (base + '-' + (f.size.w === f.size.h ? '方形' : (orientOf(f.size) === 'v' ? '竖版' : '横版')) + '-' + f.size.w + 'x' + f.size.h + '.png'),   // 自定义名称里的冒号等 Windows 禁用字符只在文件名中转为下划线
+                    rect: { x: f.rect.x, y: f.rect.y, width: f.rect.width, height: f.rect.height },
+                    size: size,
+                    frameKey: f.key + '#' + f.sizeIndex
+                };
+            }).filter((j) => !only || (j.frame != null && only.indexOf(j.frame) >= 0));
         }
 
         // 编码一张：rect 那块区域，放大到平台标准像素；要白底就在**离屏画布**上垫一层白。
@@ -13609,10 +13967,12 @@ window.addEventListener('DOMContentLoaded', function () {
             const s1 = tr.visible(), s2 = guideLayer ? guideLayer.visible() : false;
             const s3 = handleLayer ? handleLayer.visible() : false;      // §0.95：把手层也藏（它在上/下都不进作品图）
             const s4 = resizeLayer ? resizeLayer.visible() : false;      // §0.97：缩放角点同理
+            const s5 = (typeof REF !== 'undefined' && REF.layer) ? REF.layer.visible() : false;   // §REF：参考图永远不进成品
             tr.visible(false);
             if (guideLayer) guideLayer.visible(false);
             if (handleLayer) handleLayer.visible(false);
             if (resizeLayer) resizeLayer.visible(false);
+            if (typeof REF !== 'undefined' && REF.layer && !window.__cmNoRefHide) REF.layer.visible(false);   // §REF 负对照 window.__cmNoRefHide
             mainLayer.draw();
             if (guideLayer) guideLayer.draw();
             try {
@@ -13622,6 +13982,7 @@ window.addEventListener('DOMContentLoaded', function () {
                 if (guideLayer) guideLayer.visible(s2);
                 if (handleLayer) handleLayer.visible(s3);
                 if (resizeLayer) resizeLayer.visible(s4);   // §0.97
+                if (typeof REF !== 'undefined' && REF.layer) REF.layer.visible(s5);   // §REF
                 mainLayer.draw();
                 if (guideLayer) guideLayer.draw();
             }
@@ -18273,7 +18634,10 @@ window.addEventListener('DOMContentLoaded', function () {
             stage._toKonvaCanvas = function () {
                 const v = GUIDE.layer.visible();
                 GUIDE.layer.visible(false);
-                try { return orig.apply(this, arguments); } finally { GUIDE.layer.visible(v); }
+                // §REF：参考图层同样不进任何 toCanvas 产物（截图 / 导出 / 吸管取样）
+                const rv = (typeof REF !== 'undefined' && REF.layer) ? REF.layer.visible() : false;
+                if (typeof REF !== 'undefined' && REF.layer && !window.__cmNoRefHide) REF.layer.visible(false);   // §REF 负对照
+                try { return orig.apply(this, arguments); } finally { GUIDE.layer.visible(v); if (typeof REF !== 'undefined' && REF.layer && !window.__cmNoRefHide) REF.layer.visible(rv); }
             };
             GUIDE.el = { top: document.getElementById('rulerTop'), left: document.getElementById('rulerLeft'),
                          corner: document.getElementById('rulerCorner'), tip: document.getElementById('guideTip') };
@@ -18399,7 +18763,10 @@ window.addEventListener('DOMContentLoaded', function () {
                 const plats = [];
                 frames.forEach((f) => { if ((f.side + '|' + f.ratio.toFixed(4)) === x.gk && plats.indexOf(f.key) < 0) plats.push(f.key); });
                 return { no: x.no, gk: x.gk, rect: r ? { x: r.x, y: r.y, width: r.width, height: r.height } : null,
-                         ratio: ratioLabelOf(x.size.w / x.size.h), export_size: x.size.w + 'x' + x.size.h, platforms: plats };
+                         ratio: ratioLabelOf(x.size.w / x.size.h), export_size: x.size.w + 'x' + x.size.h, platforms: plats,
+                         // 2026-11-11：手动缩放 / 位移要读得回来（set_frame_transform 的写入口径）
+                         scale: (function () { const sc = frameScales[x.gk]; return sc && isFinite(sc.k) ? Math.round(sc.k * 1000) / 1000 : 1; })(),
+                         offset: (function () { const off = frameOffsets[x.gk]; return off ? { x: Math.round(off.dx), y: Math.round(off.dy) } : { x: 0, y: 0 }; })() };
             }).filter((f) => f.rect);
         }
         function agentFrame(no) {
@@ -18510,6 +18877,12 @@ window.addEventListener('DOMContentLoaded', function () {
                 if (Math.abs(lpx) > 0.001) o.letter_spacing = lpx;
                 const st = agentStrokeInfo(n);                                    // 描边：位置 / 粗细 / 颜色 / 渐变
                 if (st) o.stroke = st;
+                if (o.type === 'path_text' && f) {                                // 2026-11-11：路径文字要把控制点读回去（agent 才能复刻 / 微调同一条曲线）
+                    const pp = agentPathPtsOf(n, f);
+                    if (pp) o.path_points = pp;
+                    const ps = n.getAttr('pathStart');
+                    if (ps != null && Math.abs(Math.round(ps * 100) / 100) > 0.001) o.path_start = agentRound2(ps);
+                }
             }
             const op = (o.type === 'text' || o.type === 'path_text') ? fillOpacityOf(n) : n.opacity();
             if (op < 1) o.opacity = Math.round(op * 100) / 100;
@@ -18564,7 +18937,57 @@ window.addEventListener('DOMContentLoaded', function () {
             s.scales = JSON.parse(JSON.stringify(frameScales || {}));
             s.splits = Object.assign({}, frameSplits);
         }
+        // ==================== 2026-11-11：路径文字 / 取色 / 框变换 的底层助手 ====================
+        // 一串点 → 三次贝塞尔段（Catmull-Rom：2 点就是直线，多点自动平滑，不会像折线那样出尖角）
+        function agentCubicFromPoints(pts) {
+            const out = [];
+            for (let i = 0; i < pts.length - 1; i++) {
+                const p0 = pts[i], p3 = pts[i + 1], pv = pts[i - 1] || p0, nx = pts[i + 2] || p3;
+                out.push([{ x: p0.x, y: p0.y },
+                          { x: p0.x + (p3.x - pv.x) / 6, y: p0.y + (p3.y - pv.y) / 6 },
+                          { x: p3.x - (nx.x - p0.x) / 6, y: p3.y - (nx.y - p0.y) / 6 },
+                          { x: p3.x, y: p3.y }]);
+            }
+            return out;
+        }
+        // 取色：拍一张画布快照（藏掉选中框，和吸管同一套），按画布像素取一个色并合成背景
+        function agentSampleStage(x, y) {
+            if (!stage) return null;
+            const trv = tr.visible();
+            tr.visible(false);
+            let cv = null;
+            try { cv = stage.toCanvas({ pixelRatio: 1 }); } finally { tr.visible(trv); stage.batchDraw(); }
+            if (!cv) return null;
+            const px = Math.round(x), py = Math.round(y);
+            if (!(px >= 0 && py >= 0 && px < cv.width && py < cv.height)) return null;
+            const d = cv.getContext('2d').getImageData(px, py, 1, 1).data;
+            const bg = eyeBgColor(), a = d[3] / 255;
+            const c = [0, 1, 2].map((j) => Math.round(d[j] * a + bg[j] * (1 - a)));
+            return '#' + c.map((v) => v.toString(16).padStart(2, '0')).join('').toUpperCase();
+        }
+        // 路径文字的控制点（按框比例读回）：agent 建的那条还原给它的输入，手画的按 pathSegs 采样
+        function agentPathPtsOf(n, f) {
+            if (!n || !f) return null;
+            const src = n.getAttr('agentPathSrc');
+            if (Array.isArray(src) && src.length >= 2) return src.map((p) => ({ x: r3(p.x), y: r3(p.y) }));
+            const segs = tpFullSegsOf(n);
+            if (!segs || !segs.length) return null;
+            const m = n.getAbsoluteTransform();
+            const out = [];
+            segs.forEach((c, i) => {
+                if (i === 0) { const p0 = m.point({ x: c[0].x, y: c[0].y }); out.push({ x: r3((p0.x - f.rect.x) / f.rect.width), y: r3((p0.y - f.rect.y) / f.rect.height) }); }
+                const p = m.point({ x: c[3].x, y: c[3].y });
+                out.push({ x: r3((p.x - f.rect.x) / f.rect.width), y: r3((p.y - f.rect.y) / f.rect.height) });
+            });
+            return out;
+        }
         function agentHex(c) { return /^#?[0-9a-f]{3}([0-9a-f]{3})?$/i.test(String(c || '')) ? toHex6(String(c).charAt(0) === '#' ? c : '#' + c) : null; }
+        // 自定义目标比例：id 或 key（custom_ratio_xxx）都能认
+        function agentRatioRec(idOrKey) {
+            const s = String(idOrKey == null ? '' : idOrKey).trim();
+            const id = s.indexOf('custom_ratio_') === 0 ? s.slice('custom_ratio_'.length) : s;
+            return customRatioRecords.find((r) => r.id === id) || customRatioRecords.find((r) => customRatioIdentity(r.w, r.h) === s) || null;
+        }
         // AI 指定的字体（用户 2026-10-21「没有某个字体，agent 要去提示用户…下载安装…或者用相似字体替换」）：
         //   电脑上有（软件字体表 + 用户导入的，大小写 / 空格不计）→ 用电脑上的准确写法；
         //   没有 → 先用相近的顶上（renderer/font-match.js），记进 agentFontNotes，__cmAgent.call 把它挂到返回里（font_missing + tell_user）。
@@ -18943,8 +19366,12 @@ window.addEventListener('DOMContentLoaded', function () {
                 const avail = {};
                 Object.keys(PLATFORMS).forEach((k) => { avail[k] = PLATFORMS[k].name; });
                 return { ok: true, platforms_available: avail, platforms: activePlatforms.slice(),
-                         frames: agentFrames().map((f) => ({ no: f.no, ratio: f.ratio, export_size: f.export_size, canvas_size: Math.round(f.rect.width) + 'x' + Math.round(f.rect.height), platforms: f.platforms })),
+                         frames: agentFrames().map((f) => ({ no: f.no, ratio: f.ratio, export_size: f.export_size, canvas_size: Math.round(f.rect.width) + 'x' + Math.round(f.rect.height), platforms: f.platforms,
+                             // 2026-11-11：手动缩放 / 位移 / 这块框现在画在哪，都要能读回来核对
+                             scale: f.scale, offset: f.offset,
+                             rect: { x: Math.round(f.rect.x), y: Math.round(f.rect.y), width: Math.round(f.rect.width), height: Math.round(f.rect.height) } })),
                          note: 'elements 按最上层到最下层返回：每块框内 layer_rank=0 是该框最上层，z_index 是画布实际层号；role 表示主体 / 标题 / 贴纸等语义。字号 / 粗细 / 距离是画布像素；x / y / w / h 是占框比例。调整前后关系用 set_layer_order。',
+                         reference: refInfo(),        // §REF：叠着对位用的参考图（不进出品、不是画布元素）；没设置 = null
                          elements: agentCanvasElements(),
                          can_undo: canUndo(), can_redo: canRedo() };
             },
@@ -19253,11 +19680,13 @@ window.addEventListener('DOMContentLoaded', function () {
                         frame: g.fk ? (fs.find((x) => x.gk === g.fk) || {}).no || null : null, ratio: agentRound4(g.t) })) };
             },
             set_guide_preferences(a) {
-                if (a.show == null && a.snap == null && a.lock == null) return { ok: false, error: 'show / snap / lock 至少给一个' };
-                ['show', 'snap', 'lock'].forEach((k) => { if (a[k] != null) GUIDE.prefs[k] = !!a[k]; });
+                const keys = ['show', 'snap', 'lock', 'rulers', 'smart'];
+                if (keys.every((k) => a[k] == null)) return { ok: false, error: 'show / snap / lock / rulers / smart 至少给一个' };
+                keys.forEach((k) => { if (a[k] != null) gdSetPref(k, !!a[k]); });   // 走界面同一条：标尺要重排、弹出菜单要同步勾
                 gdSavePrefs();
                 gdRedraw();
-                return { ok: true, preferences: { show: !!GUIDE.prefs.show, snap: !!GUIDE.prefs.snap, lock: !!GUIDE.prefs.lock } };
+                const prefs = { show: !!GUIDE.prefs.show, snap: !!GUIDE.prefs.snap, lock: !!GUIDE.prefs.lock, rulers: !!GUIDE.prefs.rulers, smart: !!GUIDE.prefs.smart };
+                return { ok: true, preferences: prefs };
             },
             add_guide(a) {
                 if (GUIDE.prefs.lock) return { ok: false, error: '参考线已锁定：先 set_guide_preferences {lock:false} 再加' };
@@ -19458,12 +19887,310 @@ window.addEventListener('DOMContentLoaded', function () {
                 return { ok: true, dataURL: url, width: W, height: H, frame: no };
             },
             // 给主进程导出用：按导出规则（每块框按平台像素、白底）编码好，主进程写文件
-            async render_export() {
+            async render_export(a) {
                 if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch (e) { /* 忽略 */ } }
-                const plan = exportPlan();
+                const plan = exportPlan(a && (a.frames || a.width != null || a.height != null) ? a : {});
                 const files = withHiddenDecor(() => plan.map((j) => ({ name: j.name, dataURL: encodeRect(j.rect, j.size), width: j.size ? j.size.w : null, height: j.size ? j.size.h : null })));
                 hintStatus('AI：导出 ' + files.length + ' 张');
                 return { ok: true, files: files };
+            },
+            // ==================== 2026-11-11：路径文字 / 颜色工具 / 画布辅助（第三批 8 个工具）====================
+            // 沿曲线排字：points 按框比例（0~1），2 点 = 直线，3 点以上自动平滑成曲线
+            add_text_path(a) {
+                const txt = String(a.text == null ? '' : a.text).replace(/\s*\n\s*/g, ' ').trim();
+                if (!txt) return { ok: false, error: 'text 不能是空的' };
+                const fr = agentFrame(a.frame); if (fr.err) return { ok: false, error: fr.err };
+                const f = fr.f;
+                const pts = (Array.isArray(a.points) ? a.points : [])
+                    .map((p) => ({ x: Number(p && p.x), y: Number(p && p.y) }))
+                    .filter((p) => isFinite(p.x) && isFinite(p.y) && p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1);
+                if (pts.length < 2) return { ok: false, error: 'points 至少要两个点，且 x / y 都在 0~1' };
+                if (ed.on) commitTextEditor();
+                const cv = pts.map((p) => ({ x: f.rect.x + p.x * f.rect.width, y: f.rect.y + p.y * f.rect.height }));
+                const n = makePathTextNode(agentCubicFromPoints(cv), 0, 1);
+                n.text(txt);
+                n.setAttr('agentRole', 'text');
+                n.setAttr('agentPathSrc', pts);                        // 存原始控制点：读回按框比例原样还给 agent
+                agentStyleText(n, a);
+                if (a.align === 'left' || a.align === 'center' || a.align === 'right') n.align(a.align);
+                mainLayer.add(n);
+                tr.moveToTop();
+                if (a.x != null || a.y != null) agentPlace(n, f, a.x, a.y); else assignDecorHome(n, true);
+                pushHistory('AI 加路径文字', null);
+                agentDone('路径文字「' + txt.slice(0, 10) + '」', n);
+                return agentResult(n);
+            },
+            // 取色（吸管）：和右栏那只吸管同一套快照取色，只是不用鼠标点
+            sample_color(a) {
+                let f = null;
+                if (a.frame != null) { const fr = agentFrame(a.frame); if (fr.err) return { ok: false, error: fr.err }; f = fr.f; }
+                const nx = Math.max(0, Math.min(1, Number(a.x))), ny = Math.max(0, Math.min(1, Number(a.y)));
+                if (!isFinite(nx) || !isFinite(ny)) return { ok: false, error: 'x / y 要在 0~1 之间' };
+                const p = f ? { x: f.rect.x + nx * f.rect.width, y: f.rect.y + ny * f.rect.height }
+                            : { x: nx * stage.width(), y: ny * stage.height() };
+                const hex = agentSampleStage(p.x, p.y);
+                if (!hex) return { ok: false, error: '这个位置取不到颜色（超出画布）' };
+                return { ok: true, color: hex, frame: f ? f.no : null, point: { x: Math.round(p.x), y: Math.round(p.y) } };
+            },
+            // 从照片 / 图片贴纸提主色（和「颜色」板块的提色板同一个引擎）
+            extract_palette(a) {
+                if (typeof Colors === 'undefined' || !Colors) return { ok: false, error: '颜色模块没加载' };
+                let n = null;
+                if (a.id != null) {
+                    n = agentNode(a.id);
+                    if (!n) return { ok: false, error: '没有这个 id：' + a.id + '（用 get_canvas 看）' };
+                } else {
+                    const fr = agentFrame(a.frame); if (fr.err) return { ok: false, error: fr.err };
+                    const imgs = layerNodes().filter((x) => x.getClassName && x.getClassName() === 'Image' && agentInfo(x).frame === fr.f.no);
+                    n = imgs.sort((p, q) => (agentInfo(q).w * agentInfo(q).h) - (agentInfo(p).w * agentInfo(p).h))[0] || null;
+                    if (!n) return { ok: false, error: '第 ' + fr.f.no + ' 块框里没有图片' };
+                }
+                const img = n.image && n.image();
+                if (!img) return { ok: false, error: '这个元素不是图片（照片 / 图片贴纸才能提色）' };
+                const count = Math.max(2, Math.min(32, Math.round(Number(a.count) || COLOR_BOARD_N)));
+                let pal = [];
+                try { pal = (Colors.extractPalette(img, count) || []).map((c) => String(c).toUpperCase()); }
+                catch (e) { return { ok: false, error: '提色失败：' + String(e && e.message || e) }; }
+                if (a.apply_to_board && pal.length) { try { Colors._board(pal); } catch (e) { /* 铺板失败不影响返回 */ } }
+                return { ok: true, colors: pal, count: pal.length, source: agentInfo(n) };
+            },
+            get_color_pins() {
+                if (typeof Colors === 'undefined' || !Colors) return { ok: false, error: '颜色模块没加载' };
+                return { ok: true, colors: (Colors.getPins() || []).map((c) => (c ? String(c).toUpperCase() : null)) };
+            },
+            set_color_pins(a) {
+                if (typeof Colors === 'undefined' || !Colors) return { ok: false, error: '颜色模块没加载' };
+                if (!Array.isArray(a.colors)) return { ok: false, error: 'colors 要是数组（最多 6 个）' };
+                const list = a.colors.slice(0, 6).map((c) => {
+                    const h = c == null || c === '' ? null : agentHexRaw(c);
+                    if (c != null && c !== '' && !h) throw new Error('颜色要写 #RRGGBB：' + c);
+                    return h ? h.toUpperCase() : null;
+                });
+                Colors._setPins(list);
+                const saved = (Colors.getPins() || []).map((c) => (c ? String(c).toUpperCase() : null));
+                hintStatus('AI：常驻颜色已更新');
+                return { ok: true, colors: saved };
+            },
+            // 配色方案：不给 color = 列方案；给了 = 按方案算一组和谐色
+            get_color_scheme(a) {
+                if (typeof Colors === 'undefined' || !Colors) return { ok: false, error: '颜色模块没加载' };
+                const list = (Colors.SCHEMES || []).map((s) => ({ key: s.key, name: s.name, count: (s.angles || []).length }));
+                if (!a.color) return { ok: true, schemes: list };
+                const key = String(a.scheme || (list[0] && list[0].key) || 'complement');
+                if (!list.some((s) => s.key === key)) return { ok: false, error: '没有这个配色方案：' + key + '（不带 color 调一次拿列表）' };
+                const hsv = Colors.hexToHsv(agentHex(a.color) || '');
+                if (!hsv) return { ok: false, error: 'color 要写 #RRGGBB' };
+                const pal = (Colors.paletteFor(key, hsv[0], hsv[1], hsv[2]) || []).map((c) => String(c).toUpperCase());
+                const cnt = a.count ? Math.max(2, Math.min(8, Math.round(Number(a.count)))) : pal.length;
+                return { ok: true, scheme: key, base: String(a.color).toUpperCase(), colors: pal.slice(0, cnt), schemes: list };
+            },
+            // 按版式批量加参考线（同「视图 → 新建参考线版面」；单位都是导出像素）
+            new_guide_layout(a) {
+                if (GUIDE.prefs.lock) return { ok: false, error: '参考线已锁定：先 set_guide_preferences {lock:false} 再排版' };
+                const num = (v, d) => { const x = Number(v); return isFinite(x) && x >= 0 ? x : d; };
+                const o = {
+                    cols: Math.round(num(a.cols, 2)), rows: Math.round(num(a.rows, 0)),
+                    colGut: num(a.col_gutter, 0), rowGut: num(a.row_gutter, 0),
+                    mt: num(a.margin_top, 0), ml: num(a.margin_left, 0), mb: num(a.margin_bottom, 0), mr: num(a.margin_right, 0)
+                };
+                if (o.cols > 100 || o.rows > 100) return { ok: false, error: '列数 / 行数最多 100' };
+                const all = gdFrames();
+                if (!all.length) return { ok: false, error: '画布上还没有框：先用 set_platforms 选平台' };
+                let targets = all;
+                if (a.frame != null) {
+                    const fr = agentFrame(a.frame); if (fr.err) return { ok: false, error: fr.err };
+                    targets = all.filter((f) => f.gk === fr.f.gk);
+                    if (!targets.length) return { ok: false, error: '第 ' + fr.f.no + ' 块框现在没画出来' };
+                }
+                const plans = targets.map((f) => ({ f: f, L: gdMakeLayout(f, o) }));
+                if (plans.some((p) => !p.L)) return { ok: false, error: '边距 / 装订线太大，放不下' };
+                if (a.clear) GUIDE.list.length = 0;
+                let n = 0;
+                plans.forEach((p) => {
+                    p.L.v.forEach((t) => { gdAdd('v', p.f.gk, t); n++; });
+                    p.L.h.forEach((t) => { gdAdd('h', p.f.gk, t); n++; });
+                });
+                if (!GUIDE.prefs.show) { GUIDE.prefs.show = true; gdSavePrefs(); }
+                gdRedraw();
+                hintStatus('AI：按版面加了 ' + n + ' 条参考线');
+                return { ok: true, added: n, frames: plans.map((p) => p.f.no), guides_total: GUIDE.list.length };
+            },
+            // 手动缩放 / 挪动参考框（同抓角点缩放、按住框边拖）：框里的元素跟着一起变换
+            set_frame_transform(a) {
+                const fr = agentFrame(a.frame); if (fr.err) return { ok: false, error: fr.err };
+                const f0 = fr.f, gk = f0.gk;
+                const cur = computeFrames().find((x) => (x.side + '|' + x.ratio.toFixed(4)) === gk);
+                if (!cur || !cur.base) return { ok: false, error: '这块框现在没有画出来' };
+                const r0 = { x: f0.rect.x, y: f0.rect.y, width: f0.rect.width, height: f0.rect.height };
+                const prevOff = frameOffsets[gk] || { dx: 0, dy: 0 };
+                const wantK = a.scale != null ? clampFrameScale(cur.base, Math.max(0.1, Math.min(4, Number(a.scale) || 1))) : (cur.scale || 1);
+                const wantOff = { dx: a.offset_x != null ? (Number(a.offset_x) || 0) : prevOff.dx,
+                                  dy: a.offset_y != null ? (Number(a.offset_y) || 0) : prevOff.dy };
+                if (a.scale == null && a.offset_x == null && a.offset_y == null) return { ok: false, error: 'scale / offset_x / offset_y 至少给一个' };
+                // 框里的元素（照片 / 文字 / 贴纸）：和拖角点缩放时同一套映射（盖满框线的锚框线、只贴画面区的锚画面区）
+                const mates = layerNodes().filter((n) => { const mf = frameOfNode(n); return mf && String(mf.gk) === gk; }).map((n) => {
+                    const mr = rectOfNode(n);
+                    const coverF = mr.x <= r0.x + 1 && mr.y <= r0.y + 1 && mr.x + mr.width >= r0.x + r0.width - 1 && mr.y + mr.height >= r0.y + r0.height - 1;
+                    return { node: n, x0: n.x(), y0: n.y(), sx0: n.scaleX() || 1, sy0: n.scaleY() || 1,
+                             useF: coverF || cellIndexOfNode(n, gk) !== null, px0: isShapeNode(n) ? shapePxOf(n) : null };
+                });
+                const r1 = clampFrameRect(frameRectFromScale(cur.base, { k: wantK, ax: 0.5, ay: 0.5 }, wantOff));
+                frameScales[gk] = { k: wantK, ax: 0.5, ay: 0.5 };
+                frameOffsets[gk] = wantOff;
+                const fitF = contentFit(r0, r1), fitC = contentFit(contentRect(r0), contentRect(r1));
+                mates.forEach((m) => {
+                    const fit = (!window.__cmNoFanchor && m.useF) ? fitF : fitC;
+                    m.node.position({ x: m.x0 * fit.kx + fit.ox, y: m.y0 * fit.ky + fit.oy });
+                    m.node.scaleX((m.sx0 || 1) * fit.kx); m.node.scaleY((m.sy0 || 1) * fit.ky);
+                    if (m.px0) shapeSetPx(m.node, m.px0, Math.sqrt(fit.kx * fit.ky));      // 形状的字号 / 描边 / 阴影是画布像素，按同倍数换算
+                });
+                drawPlatformFrame();
+                syncImageClipRectsNow();
+                mainLayer.draw();
+                pushHistory('AI 框变换', null);
+                const now = agentFrames().find((x) => x.gk === gk) || null;
+                hintStatus('AI：第 ' + f0.no + ' 块框已' + (a.scale != null ? '缩放 ' + Math.round(wantK * 100) / 100 : '') + (a.offset_x != null || a.offset_y != null ? ' 并位移' : ''));
+                return { ok: true, frame: now, moved: mates.length };
+            },
+            // §REF：参考图（对照用，不进出品）
+            async set_reference_image(a) {
+                const p = String(a.path || '').trim();
+                if (!p) return { ok: false, error: 'path 不能是空的（参考图的绝对路径）' };
+                return await setReferenceImage({ path: p, opacity: a.opacity, mode: a.mode });
+            },
+            clear_reference_image() {
+                const had = !!REF.on;
+                clearReferenceImage();
+                return { ok: true, cleared: had, reference: refInfo() };
+            },
+            async measure_reference(a) { return await measureReference(a || {}); },
+            async compare_with_reference(a) { return await compareWithReference(a || {}); },
+            // ==================== 2026-11-11 第四批：字体库 / 贴纸库 / 自定义目标比例（剩下的三组）====================
+            async import_fonts(a) {
+                const paths = (Array.isArray(a.paths) ? a.paths : []).map((s) => String(s || '').trim()).filter(Boolean);
+                if (!paths.length) return { ok: false, error: 'paths 不能是空的（字体文件的绝对路径）' };
+                const r = await importFontsToLibrary(paths);
+                if (!r || !r.ok) return { ok: false, error: (r && r.canceled) ? '没有导入（取消了）' : '导入失败（只有桌面版能导入字体）' };
+                const added = (r.added || []).map((x) => ({ family: x.family, file: x.file }));
+                const skipped = (r.skipped || []).map((x) => ({ file: x.file || x.name, reason: x.reason }));
+                hintStatus('AI：导入字体 ' + added.length + ' 个' + (skipped.length ? '（跳过 ' + skipped.length + '）' : ''));
+                return { ok: added.length > 0, added: added, skipped: skipped, imported_total: (FONTS.imported || []).length };
+            },
+            async remove_font(a) {
+                const fam = String(a.family || '').trim();
+                if (!fam) return { ok: false, error: 'family 不能是空的（用 list_fonts 返回的 imported 列表）' };
+                if (a.confirm !== true) return { ok: false, error: '删字体必须传 confirm: true' };
+                await loadImportedFonts();
+                const list = FONTS.imported || [];
+                const hit = list.find((x) => x.family === fam) || list.find((x) => String(x.family).toLowerCase() === fam.toLowerCase());
+                if (!hit) return { ok: false, error: '没有这个导入字体：' + fam + '（系统字体删不掉）' };
+                const ok = await removeImportedFont(hit);
+                if (!ok) return { ok: false, error: '删除失败（字体文件可能已经不在了）' };
+                return { ok: true, removed: { family: hit.family }, imported: (FONTS.imported || []).map((x) => x.family) };
+            },
+            async save_to_font_library(a) {
+                if (a.id != null) {
+                    const n = agentNode(a.id);
+                    if (!n) return { ok: false, error: '没有这个 id：' + a.id + '（用 get_canvas 看）' };
+                    const t = agentType(n);
+                    if (t !== 'text' && t !== 'path_text' && t !== 'text_group') return { ok: false, error: '只能存文字 / 文字组 / 路径文字（这个是 ' + t + '）' };
+                    selectNode(n);
+                }
+                const r = await saveSelectionToFontLibrary(a.name);
+                if (!r || !r.ok) return { ok: false, error: (r && r.reason) || '没存进去' };
+                return { ok: true, id: r.id, count: r.count, total: (r.items || []).length };
+            },
+            async list_stickers() {
+                if (!LIB.items.length && window.coverApp && window.coverApp.library) {
+                    try { LIB.items = libItems(await window.coverApp.library.list()); } catch (e) { /* 读不到就用现有 */ }
+                }
+                const hidden = hiddenStickers();
+                const imported = (LIB.items || []).filter((x) => x.kind === 'sticker')
+                    .map((x) => ({ id: x.id, name: x.name, width: x.w, height: x.h }));
+                return { ok: true, builtin: BUILTIN_STICKERS.slice(), hidden: hidden,
+                         visible_builtin: BUILTIN_STICKERS.filter((e) => hidden.indexOf(e) < 0), imported: imported };
+            },
+            async import_stickers(a) {
+                const paths = (Array.isArray(a.paths) ? a.paths : []).map((s) => String(s || '').trim()).filter(Boolean);
+                if (!paths.length) return { ok: false, error: 'paths 不能是空的（图片的绝对路径）' };
+                if (!(window.coverApp && window.coverApp.library && window.coverApp.library.importPaths)) return { ok: false, error: '只有桌面版才能导入贴纸' };
+                if (!LIB.items.length) { try { LIB.items = libItems(await window.coverApp.library.list()); } catch (e) { /* 忽略 */ } }
+                const beforeIds = {};
+                (LIB.items || []).forEach((x) => { beforeIds[x.id] = 1; });
+                const res = await window.coverApp.library.importPaths(paths, 'sticker');
+                LIB.items = libItems(res);
+                const skipped = libSkipped(res);
+                const added = (LIB.items || []).filter((x) => !beforeIds[x.id]).map((x) => ({ id: x.id, name: x.name, width: x.w, height: x.h }));
+                if (typeof renderStickerLibrary === 'function') { try { await renderStickerLibrary(); } catch (e) { /* 面板没开不影响 */ } }
+                reportSkipped(skipped);
+                hintStatus('AI：导入贴纸 ' + added.length + ' 个' + (skipped.length ? '（跳过 ' + skipped.length + '）' : ''));
+                return { ok: added.length > 0, added: added, skipped: skipped, total: (LIB.items || []).filter((x) => x.kind === 'sticker').length };
+            },
+            async remove_sticker(a) {
+                if (a.confirm !== true) return { ok: false, error: '删贴纸必须传 confirm: true' };
+                const id = String(a.id || '').trim();
+                if (!id) return { ok: false, error: 'id 不能是空的（用 list_stickers 的 imported[].id）' };
+                if (!(window.coverApp && window.coverApp.library)) return { ok: false, error: '只有桌面版才能改贴纸库' };
+                LIB.items = libItems(await window.coverApp.library.remove(id));
+                if (typeof renderStickerLibrary === 'function') { try { await renderStickerLibrary(); } catch (e) { /* 同上 */ } }
+                hintStatus('AI：已从贴纸库删除 ' + id);
+                return { ok: true, removed: id, imported: (LIB.items || []).filter((x) => x.kind === 'sticker').map((x) => ({ id: x.id, name: x.name })) };
+            },
+            hide_builtin_sticker(a) {
+                const emoji = String(a.emoji || '').trim();
+                if (!emoji) return { ok: false, error: 'emoji 不能是空的' };
+                if (BUILTIN_STICKERS.indexOf(emoji) < 0) return { ok: false, error: '不是内置表情：' + emoji + '（用 list_stickers 看 builtin）' };
+                hideBuiltinSticker(emoji);
+                if (typeof renderStickerLibrary === 'function') { try { renderStickerLibrary(); } catch (e) { /* 同上 */ } }
+                const pop = document.getElementById('stickerPop');
+                if (pop && !pop.hidden) spRender();
+                return { ok: true, hidden: hiddenStickers() };
+            },
+            restore_builtin_stickers() {
+                restoreBuiltinStickers();
+                return { ok: true, hidden: hiddenStickers(), visible_builtin: BUILTIN_STICKERS.length };
+            },
+            list_custom_ratios() {
+                const rows = customRatioRecords.map((r) => {
+                    const key = customRatioKey(r.id);
+                    return { key: key, id: r.id, name: r.name || customRatioIdentity(r.w, r.h), width: r.w, height: r.h,
+                             identity: customRatioIdentity(r.w, r.h), ratio: ratioLabelOf(r.w / r.h),
+                             active: activePlatforms.indexOf(key) >= 0, exists: !!PLATFORMS[key] };
+                });
+                return { ok: true, total: rows.length, max: 20, ratios: rows };
+            },
+            add_custom_ratio(a) {
+                const w = Math.round(Number(a.width)), h = Math.round(Number(a.height));
+                if (!isFinite(w) || !isFinite(h)) return { ok: false, error: 'width / height 要写数字' };
+                if (!addCustomRatio(w, h)) {
+                    const el = document.getElementById('customRatioError');
+                    return { ok: false, error: (el && el.textContent) || '加不上（宽高要 64–10000 的整数，最多 20 个，同比例不能重复）' };
+                }
+                const rec = customRatioRecords[customRatioRecords.length - 1];
+                if (a.name) renameCustomRatio(rec.id, a.name);                    // 名字不合法就保留默认「宽:高」，不影响新增
+                const key = customRatioKey(rec.id);
+                hintStatus('AI：新增自定义目标 ' + rec.w + '×' + rec.h);
+                return { ok: true, id: rec.id, key: key, name: (customRatioRecords.find((r) => r.id === rec.id) || rec).name,
+                         width: w, height: h, active: activePlatforms.indexOf(key) >= 0,
+                         frames: agentFrames().map((f) => ({ no: f.no, ratio: f.ratio, export_size: f.export_size })) };
+            },
+            rename_custom_ratio(a) {
+                const rec = agentRatioRec(a.id);
+                if (!rec) return { ok: false, error: '没有这个自定义比例：' + a.id + '（用 list_custom_ratios 看）' };
+                if (!renameCustomRatio(rec.id, a.name)) {
+                    const el = document.getElementById('customRatioError');
+                    return { ok: false, error: (el && el.textContent) || '改名失败（名字要 ≤30 字、不能含 \\ / * ? " < > |）' };
+                }
+                const now = customRatioRecords.find((r) => r.id === rec.id) || rec;
+                return { ok: true, id: now.id, key: customRatioKey(now.id), name: now.name, width: now.w, height: now.h };
+            },
+            remove_custom_ratio(a) {
+                if (a.confirm !== true) return { ok: false, error: '删自定义比例必须传 confirm: true' };
+                const rec = agentRatioRec(a.id);
+                if (!rec) return { ok: false, error: '没有这个自定义比例：' + a.id + '（用 list_custom_ratios 看）' };
+                if (!removeCustomRatio(rec.id)) return { ok: false, error: '删不掉（可能已经不在了）' };
+                return { ok: true, removed: { id: rec.id, key: customRatioKey(rec.id), width: rec.w, height: rec.h },
+                         left: customRatioRecords.length, platforms: activePlatforms.slice() };
             }
         };
         window.__cmAgent = {

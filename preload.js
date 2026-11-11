@@ -57,7 +57,7 @@ contextBridge.exposeInMainWorld('coverApp', {
     fonts: {
         list: (force) => ipcRenderer.invoke('fonts:list', !!force),
         imported: () => ipcRenderer.invoke('fonts:imported'),
-        import: () => ipcRenderer.invoke('fonts:import'),
+        import: (paths) => ipcRenderer.invoke('fonts:import', paths),   // 给了 paths = 直接导这几个文件（AI 用）；不传 = 弹对话框（面板行为不变）
         remove: (id) => ipcRenderer.invoke('fonts:remove', id),
         readFile: (family) => ipcRenderer.invoke('fonts:readFile', family),
         faces: (family) => ipcRenderer.invoke('fonts:faces', family),          // 2026-10-22 字体样式下拉

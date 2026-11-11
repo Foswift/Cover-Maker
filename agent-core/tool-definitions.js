@@ -135,8 +135,8 @@ const TOOLS = [
       properties: {
         platforms: {
           type: 'array',
-          items: { type: 'string', enum: PLATFORMS },
-          description: '要勾上的平台（其余取消）'
+          items: { type: 'string' },
+          description: '要勾上的平台（其余取消）：内置 ' + PLATFORMS.join(' / ') + '；自定义目标写 list_custom_ratios 给的 key（custom_ratio_xxx）'
         }
       },
       required: ['platforms']
@@ -342,9 +342,17 @@ const TOOLS = [
   },
   {
     name: 'export_images',
-    description: '导出封面图片：每块框按平台标准尺寸各导一张 PNG（白底），写到指定文件夹，返回文件路径。',
+    description: '导出封面图片：每块框按平台标准尺寸各导一张 PNG（白底），写到指定文件夹，返回文件路径。给了 frames 就只导那几块框；给了 width/height 就按这个像素导出（自定义规格，铺满整块框）。',
     annotations: DESTRUCTIVE_IDEMPOTENT,
-    inputSchema: { type: 'object', properties: { dir: { type: 'string', description: '导出到哪个文件夹（绝对路径；不写 = 图片/封面制作器导出）' } } }
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dir: { type: 'string', description: '导出到哪个文件夹（绝对路径；不写 = 图片/封面制作器导出）' },
+        frames: { type: 'array', items: { type: 'integer', minimum: 1 }, minItems: 1, maxItems: 20, description: '只导这几块框（框编号，get_canvas 的 frames[].no）；不写 = 每块框都导' },
+        width: { type: 'number', minimum: 64, maximum: 8000, description: '自定义导出宽度（像素）；和 height 一起给才算自定义规格，不写 = 用平台标准像素' },
+        height: { type: 'number', minimum: 64, maximum: 8000, description: '自定义导出高度（像素）' }
+      }
+    }
   },
   {
     name: 'add_sticker_image',
@@ -563,14 +571,16 @@ const TOOLS = [
   },
   {
     name: 'set_guide_preferences',
-    description: '设置参考线的显示、吸附和锁定偏好。锁定后不能强制绕过；移动或删除前应先解锁。',
+    description: '设置参考线的显示、吸附和锁定偏好，以及标尺 / 智能参考线开关（同「视图」菜单与顶栏参考线菜单）。锁定后不能强制绕过；移动或删除前应先解锁。',
     annotations: WRITE_IDEMPOTENT,
     inputSchema: {
       type: 'object',
       properties: {
-        show: { type: 'boolean' },
-        snap: { type: 'boolean' },
-        lock: { type: 'boolean' }
+        show: { type: 'boolean', description: '显示 / 隐藏参考线' },
+        snap: { type: 'boolean', description: '对齐到参考线' },
+        lock: { type: 'boolean', description: '锁定参考线（锁定后不能增删）' },
+        rulers: { type: 'boolean', description: '标尺（同上排标尺条）' },
+        smart: { type: 'boolean', description: '智能参考线（拖动时出现的粉色对齐提示）' }
       }
     }
   },
@@ -692,6 +702,297 @@ const TOOLS = [
           blur: { type: 'number', description: '大小 / 模糊（画布像素）' }, angle: { type: 'number', description: '方向（度，0 = 右，90 = 下）' },
           opacity: { type: 'number', minimum: 0, maximum: 1 } } }
       }
+    }
+  },
+  // ==================== 2026-11-11：路径文字 / 颜色 / 画布辅助（三组，补「AI 能操作全部功能」缺口）====================
+  {
+    name: 'add_text_path',
+    description: '沿一条曲线排文字（同画布右键「文字路径」拖出来的那种）。曲线用若干点给出（按框的比例 0~1，左上 = 0,0），文字顺着这条线排；建好后 update_element 改字 / 字体 / 字号 / 颜色，或再调一次本工具换一条曲线。',
+    annotations: WRITE,
+    inputSchema: {
+      type: 'object',
+      properties: Object.assign({
+        text: { type: 'string', description: '路径上的文字（不能为空；换行会变成空格）' },
+        points: {
+          type: 'array', minItems: 2, maxItems: 64,
+          description: '曲线经过的点（按框宽 / 框高的比例，0~1，按顺序连起来）。给 2 点 = 直线，3 点以上会自动平滑成曲线',
+          items: { type: 'object', properties: { x: { type: 'number', minimum: 0, maximum: 1 }, y: { type: 'number', minimum: 0, maximum: 1 } }, required: ['x', 'y'] }
+        },
+        size: { type: 'number', description: '字号（画布像素，不写 = 默认字号）' },
+        color: COLOR('文字颜色'),
+        font: { type: 'string', description: '字体名（电脑上没有会用相近字体代替，返回里带 font_missing / tell_user）' },
+        stroke_width: { type: 'number', description: '描边粗细（按字号百分比，0 = 不描边）' },
+        stroke_color: COLOR('描边颜色'),
+        align: { type: 'string', enum: ['left', 'center', 'right'], description: '沿曲线的对齐方式（默认 left = 从曲线起点开始排）' }
+      }, { frame: FRAME, x: POS.x, y: POS.y })
+    }
+  },
+  {
+    name: 'sample_color',
+    description: '从画布取样颜色（同色盘右下角那只吸管，取的就是眼睛看到的成品颜色）。给了 frame 就按那块框内的比例取，不给 frame 就按整块画布的比例取。',
+    annotations: READ,
+    inputSchema: {
+      type: 'object',
+      properties: Object.assign({ frame: { type: 'integer', minimum: 1, description: '在哪块框里取（不写 = 整块画布）' } }, {
+        x: { type: 'number', minimum: 0, maximum: 1, description: '横向位置（占框宽 / 画布宽的比例，0 = 左，1 = 右）' },
+        y: { type: 'number', minimum: 0, maximum: 1, description: '纵向位置（占框高 / 画布高的比例，0 = 顶，1 = 底）' }
+      }),
+      required: ['x', 'y']
+    }
+  },
+  {
+    name: 'extract_palette',
+    description: '从一张照片 / 图片贴纸里提主色（同「颜色」板块的提色板）。不写 id 就取第 frame 块框里最大的那张照片。',
+    annotations: READ,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '照片 / 图片贴纸的 id；不写 = 第 frame 块框里最大的那张照片' },
+        frame: FRAME,
+        count: { type: 'number', minimum: 2, maximum: 32, description: '要几个颜色（默认 24，同提色板）' },
+        apply_to_board: { type: 'boolean', description: 'true = 同时把这组颜色铺到右栏提色板上（用户在界面上看得见）' }
+      }
+    }
+  },
+  {
+    name: 'get_color_pins',
+    description: '读常驻颜色格子（右栏颜色的那 6 个空格，存本机、重开还在）。',
+    annotations: READ,
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'set_color_pins',
+    description: '写常驻颜色格子（最多 6 个，null / 空字符串 = 这一格留空）。整组替换，不写就保持原样。',
+    annotations: WRITE_IDEMPOTENT,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        colors: { type: 'array', maxItems: 6, items: { anyOf: [Object.assign({ type: 'string' }, HEX), { type: 'null' }] }, description: '6 个颜色（#RRGGBB），不够 6 个后面留空' }
+      },
+      required: ['colors']
+    }
+  },
+  {
+    name: 'get_color_scheme',
+    description: '按配色方案算一组和谐色（同「颜色」板块的配色方案：互补 / 三分 / 四分 / 类似 / 单色等）。不给 color 就列出所有方案名。',
+    annotations: READ,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scheme: { type: 'string', description: '方案 key（先从本工具不带 color 调一次拿到列表）' },
+        color: COLOR('主色（#RRGGBB）'),
+        count: { type: 'number', minimum: 2, maximum: 8, description: '要几个颜色（不写 = 该方案原生的色数）' }
+      }
+    }
+  },
+  {
+    name: 'new_guide_layout',
+    description: '按版式批量加参考线（同「视图 → 新建参考线版面」）：列数 / 行数 / 装订线 / 四边距，单位都是导出像素。列或行填 0 = 那个方向不分。',
+    annotations: WRITE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        frame: { type: 'integer', minimum: 1, description: '只按第几块框的规格排版（不写 = 每块框各排一套）' },
+        cols: { type: 'integer', minimum: 0, maximum: 100, description: '列数（默认 2）' },
+        rows: { type: 'integer', minimum: 0, maximum: 100, description: '行数（默认 0）' },
+        col_gutter: { type: 'number', minimum: 0, description: '列装订线（导出像素）' },
+        row_gutter: { type: 'number', minimum: 0, description: '行装订线（导出像素）' },
+        margin_top: { type: 'number', minimum: 0 },
+        margin_left: { type: 'number', minimum: 0 },
+        margin_bottom: { type: 'number', minimum: 0 },
+        margin_right: { type: 'number', minimum: 0 },
+        clear: { type: 'boolean', description: 'true = 先清掉现有参考线再加' }
+      }
+    }
+  },
+  {
+    name: 'set_frame_transform',
+    description: '手动缩放 / 挪动参考框本身（同画布上抓框的角点缩放、按住框边拖）。框里的照片 / 文字 / 贴纸会跟着一起变换。只影响界面排布，不影响导出像素。',
+    annotations: WRITE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        frame: { type: 'integer', minimum: 1, description: '第几块框（1 起；不写 = 1）' },
+        scale: { type: 'number', minimum: 0.1, maximum: 4, description: '缩放倍数（1 = 原始大小，绕框中心缩）' },
+        offset_x: { type: 'number', minimum: -4000, maximum: 4000, description: '横向位移（画布像素，正 = 右）' },
+        offset_y: { type: 'number', minimum: -4000, maximum: 4000, description: '纵向位移（画布像素，正 = 下）' }
+      }
+    }
+  },
+  // ==================== 2026-11-11 第四批：字体库 / 贴纸库 / 自定义目标比例（剩下的三组）====================
+  {
+    name: 'import_fonts',
+    description: '把本机的 .ttf / .otf / .ttc 字体文件导入软件的「导入字体」库（不用装进系统，导完立刻能用；同顶栏「文字 → ＋ 导入字体」）。返回导入了哪些族名、跳过了哪些及原因。',
+    annotations: WRITE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        paths: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string' }, description: '字体文件的绝对路径（.ttf / .otf / .ttc / .otc）' }
+      },
+      required: ['paths']
+    }
+  },
+  {
+    name: 'remove_font',
+    description: '删掉一个**导入的**字体（连字体文件一起删；同「文字」弹出框里字体的 ×）。系统字体删不了。已经用它的文字会退回同类字体。',
+    annotations: DESTRUCTIVE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        family: { type: 'string', description: '字体族名（list_fonts 返回的 imported 里那些）' },
+        confirm: { type: 'boolean', description: '必须传 true 才会删（防误删）' }
+      },
+      required: ['family', 'confirm']
+    }
+  },
+  {
+    name: 'save_to_font_library',
+    description: '把画布上选中文字的样式存进「字体库」（同右栏「存入字体库」/ 文字菜单那条）。不给 id 就用当前选中的文字。',
+    annotations: WRITE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '要存的文字元素 id（不写 = 用当前选中的）' },
+        name: { type: 'string', description: '存进去的名字（不写 = 「框选文字 · N 段」）' }
+      }
+    }
+  },
+  {
+    name: 'list_stickers',
+    description: '看贴纸库里有什么：内置表情（含被藏起来的）、导入的贴纸（带 id，可以删）。',
+    annotations: READ,
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'import_stickers',
+    description: '把本机图片导入贴纸库（同「贴纸」弹出框右上角＋导入贴纸）。PNG/JPG/WEBP/GIF，建议透明背景 PNG。',
+    annotations: WRITE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        paths: { type: 'array', minItems: 1, maxItems: 50, items: { type: 'string' }, description: '图片文件的绝对路径' }
+      },
+      required: ['paths']
+    }
+  },
+  {
+    name: 'remove_sticker',
+    description: '从贴纸库删掉一个**导入的**贴纸（同贴纸格子悬停的 ×，库里那份副本一起删、删了不能恢复）。内置表情不能这样删，见 hide_builtin_sticker。',
+    annotations: DESTRUCTIVE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '导入贴纸的 id（list_stickers 的 imported[].id）' },
+        confirm: { type: 'boolean', description: '必须传 true 才会删' }
+      },
+      required: ['id', 'confirm']
+    }
+  },
+  {
+    name: 'hide_builtin_sticker',
+    description: '从贴纸库里藏掉一个内置表情（同贴纸格子的 × / 右键删除）。可以 restore_builtin_stickers 全部恢复。',
+    annotations: WRITE_IDEMPOTENT,
+    inputSchema: {
+      type: 'object',
+      properties: { emoji: { type: 'string', description: '内置表情（list_stickers 的 builtin 里那些）' } },
+      required: ['emoji']
+    }
+  },
+  {
+    name: 'restore_builtin_stickers',
+    description: '恢复全部被藏掉的内置表情（同「↺ 恢复删除的表情」/ 文件 → 恢复内置贴纸）。',
+    annotations: WRITE_IDEMPOTENT,
+    inputSchema: { type: 'object', properties: {} }
+  },
+  // ==================== 2026-11-11 第五批：复刻参考图（参考图层 + 量测 + 比对，Phase 1）====================
+  {
+    name: 'set_reference_image',
+    description: '把一张图设成「参考图」：半透明叠在画布上（overlay，默认）方便对位，或者贴在窗口右侧单独对照（side）。参考图**不进导出的成品**，也不是画布元素（不会被选中 / 删除 / 存进模板），重启就没了。它只给 AI 和人对照用。',
+    annotations: WRITE_IDEMPOTENT,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '参考图的绝对路径（png / jpg / webp / gif）' },
+        opacity: { type: 'number', minimum: 0.05, maximum: 1, description: '叠在画布上时的不透明度（默认 0.5；side 模式无关）' },
+        mode: { type: 'string', enum: ['overlay', 'side'], description: 'overlay = 叠在画布上；side = 窗口右侧单独面板' }
+      },
+      required: ['path']
+    }
+  },
+  {
+    name: 'clear_reference_image',
+    description: '关掉参考图（画布上那层 / 右侧面板一起收）。',
+    annotations: WRITE_IDEMPOTENT,
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'measure_reference',
+    description: '把当前参考图读成数据（复刻的第一步）：背景色、显著色块（bbox + 纯色/渐变 + 颜色）、文字区（bbox + 估算字号）、主色。坐标全是占参考图宽/高的比例 0~1，可以直接当框的 x/y/w/h 用。',
+    annotations: READ,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        max_width: { type: 'number', minimum: 120, maximum: 480, description: '分析用的采样宽度（默认 360，越大越准越慢）' },
+        max_regions: { type: 'number', minimum: 1, maximum: 24, description: '最多返回几个色块（默认 12，按面积从大到小）' },
+        palette: { type: 'number', minimum: 2, maximum: 8, description: '主色要几个（默认 6）' }
+      }
+    }
+  },
+  {
+    name: 'compare_with_reference',
+    description: '把当前画布和参考图对比（复刻的收尾/迭代用）：返回相似度 similarity（0~1）、平均色差 mean_delta，以及偏差最大的 5 块（bbox + delta_e + kind：color 颜色不对 / position 位置偏了 / missing 少了东西）。先设参考图再调它；没设参考图会报错。',
+    annotations: READ,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        grid: { type: 'number', minimum: 4, maximum: 24, description: '把图切成 grid×grid 格来比（默认 8；要更细看位置偏差就用 12）' }
+      }
+    }
+  },
+  {
+    name: 'list_custom_ratios',
+    description: '看自定义目标比例（左栏平台列表最下面自己加的那些）都有哪些，返回 key / 名称 / 宽高 / 是否已勾选。',
+    annotations: READ,
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'add_custom_ratio',
+    description: '新增一个自定义目标比例（同左栏「＋ 新增比例」）：宽高是**最终导出像素**（64–10000 的整数），比例由宽高自动算。新增后默认成为当前目标（勾上）。',
+    annotations: WRITE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        width: { type: 'integer', minimum: 64, maximum: 10000, description: '导出宽度（像素）' },
+        height: { type: 'integer', minimum: 64, maximum: 10000, description: '导出高度（像素）' },
+        name: { type: 'string', description: '显示名（不写 = 「宽:高」）' }
+      },
+      required: ['width', 'height']
+    }
+  },
+  {
+    name: 'rename_custom_ratio',
+    description: '给自定义目标比例改个显示名。',
+    annotations: WRITE_IDEMPOTENT,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '自定义比例的 id 或 key（custom_ratio_xxx，list_custom_ratios 给的）' },
+        name: { type: 'string', description: '新名字（≤30 字，不能含 \\ / * ? " < > |）' }
+      },
+      required: ['id', 'name']
+    }
+  },
+  {
+    name: 'remove_custom_ratio',
+    description: '删掉一个自定义目标比例（同那一行的 ×）：连带取消勾选、清掉这块框的手动位移 / 缩放。',
+    annotations: DESTRUCTIVE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '自定义比例的 id 或 key' },
+        confirm: { type: 'boolean', description: '必须传 true 才会删' }
+      },
+      required: ['id', 'confirm']
     }
   }
 ];

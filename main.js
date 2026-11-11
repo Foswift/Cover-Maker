@@ -1864,8 +1864,9 @@ function registerFontIpc() {
     }));
 
     // 手动导入：原生多选对话框；自检用 `--importfont=<路径>[;<路径>]` 顶替对话框（照 --exportdir 那套）
-    ipcMain.handle('fonts:import', async () => {
-        let files = fontImportPlan();      // §0.99.18 修：只有**非空**的顶替清单才算自检顶替，否则一律弹原生对话框
+    ipcMain.handle('fonts:import', async (_e, paths) => {
+        // 2026-11-11：AI 的 import_fonts 直接给绝对路径；不传 = 和改前完全一样（弹对话框 / 走 --importfont 顶替）
+        let files = (Array.isArray(paths) && paths.length) ? paths.map(String) : fontImportPlan();      // §0.99.18 修：只有**非空**的顶替清单才算自检顶替，否则一律弹原生对话框
         if (!files) {
             const r = await dialog.showOpenDialog(win, {
                 title: tr('导入字体文件', 'Import Font Files'),
@@ -14376,6 +14377,573 @@ function createWindow() {
                     console.log('[cover-maker] selftest agentcoretools2 判据:', JSON.stringify({ 没过的步: c2 && c2.failed || ['无结果'], 'Agent核心编辑契约第二组': agentCoreTools2Ok }));
                 }
 
+                // 第三批（2026-11-11 用户「2，5，6先接上」）：路径文字 / 颜色工具 / 画布辅助
+                //   ① 路径文字：建 → 读回控制点 → 改字 → 撤销两步清空（非法点数要拒）
+                //   ② 取色（吸管）：1:1 框里放四色块图 → 左上=红、右下=黄、整块画布也取得到
+                //   ③ 提色：同一张图 → 四象限都被提到
+                //   ④ 常驻颜色：写 6 格 / 读回一致 / 非法色拒绝
+                //   ⑤ 配色方案：列方案 ≥10 / 互补 2 色且不同 / 未知方案拒绝
+                //   ⑥ 参考线版面：2 列 = 3 条 / 锁定挡加 / 清空
+                //   ⑦ 框变换：scale 1.2 框变宽、元素相对位置不漂、offset_x 30 右移、两次撤销复原
+                //   主进程再验导出：单框 + 自定义 300×400（PNG 头必须真是 300×400），不传参数仍是每框一张平台像素
+                let agentParityOk = true;
+                if (process.argv.includes('--agentparity')) {
+                    const imgP = 'C:/tmp/cm_agentparity_' + process.pid + '.png';
+                    let cp = { ok: false, failed: ['场景没有运行'] };
+                    let exA = null, exB = null;
+                    try {
+                        await fs.mkdir(path.dirname(imgP), { recursive: true });
+                        const QS = 24, qbuf = Buffer.alloc(QS * QS * 4);
+                        for (let y = 0; y < QS; y++) {
+                            for (let x = 0; x < QS; x++) {
+                                const q = (x < QS / 2) ? (y < QS / 2 ? [0, 0, 255, 255] : [255, 0, 0, 255])      // 左上红
+                                                      : (y < QS / 2 ? [0, 255, 0, 255] : [0, 255, 255, 255]); // 右上绿 / 左下蓝 / 右下黄（BGRA）
+                                const i = (y * QS + x) * 4;
+                                qbuf[i] = q[0]; qbuf[i + 1] = q[1]; qbuf[i + 2] = q[2]; qbuf[i + 3] = q[3];
+                            }
+                        }
+                        await fs.writeFile(imgP, nativeImage.createFromBitmap(qbuf, { width: QS, height: QS }).toPNG());
+                        cp = await jsx(`(async function () {
+                            var out = {}, failed = [];
+                            var IMG = ${JSON.stringify(imgP)};
+                            var call = function (n, a) { return window.__cmAgent.call(n, a || {}); };
+                            var clear = function () { layerNodes().forEach(function (n) { n.destroy(); }); tr.nodes([]); selectedNode = null; mainLayer.draw(); refreshLayers(); window.__cmHistoryReset(); };
+                            var el = function (id) { return (out.__canvas || { elements: [] }).elements.find(function (x) { return String(x.id) === String(id); }) || null; };
+                            var rgbc = function (s) { return [parseInt(String(s).substr(1, 2), 16), parseInt(String(s).substr(3, 2), 16), parseInt(String(s).substr(5, 2), 16)]; };
+                            var step = async function (label, fn) {
+                                try { out[label] = await fn(); }
+                                catch (e) { out[label] = { error: String(e && e.message || e), stack: String(e && e.stack || '').slice(0, 800) }; failed.push(label + ' 异常'); }
+                            };
+                            try {
+                                // ① 路径文字
+                                await step('路径文字', async function () {
+                                    clear(); await call('set_platforms', { platforms: ['xiaohongshu'] });
+                                    var r = await call('add_text_path', { text: '弯的标题', frame: 1, size: 40, color: '#FF3366',
+                                        points: [{ x: 0.15, y: 0.8 }, { x: 0.5, y: 0.55 }, { x: 0.85, y: 0.8 }] });
+                                    out.__canvas = await call('get_canvas'); var e = el(r.element && r.element.id);
+                                    var pp = (e && e.path_points) || [];
+                                    var built = r.ok && e && e.type === 'path_text' && e.text === '弯的标题' && Math.round(e.size) === 40
+                                        && String(e.color).toLowerCase() === '#ff3366' && pp.length === 3
+                                        && Math.abs(pp[1].x - 0.5) < 0.02 && Math.abs(pp[1].y - 0.55) < 0.02;
+                                    var bad = await call('add_text_path', { text: 'x', frame: 1, points: [{ x: 0.1, y: 0.1 }] });
+                                    var up = e ? await call('update_element', { id: e.id, text: '改过的' }) : { ok: false };
+                                    out.__canvas = await call('get_canvas'); var e2 = e ? el(e.id) : null;
+                                    await call('undo', {}); out.__canvas = await call('get_canvas'); var e3 = e ? el(e.id) : null;
+                                    await call('undo', {}); out.__canvas = await call('get_canvas');
+                                    var gone = (out.__canvas.elements || []).filter(function (x) { return x.type === 'path_text'; }).length;
+                                    var ok = built && bad.ok === false && up.ok && e2 && e2.text === '改过的' && e3 && e3.text === '弯的标题' && gone === 0;
+                                    if (!ok) failed.push('路径文字（建 / 读回控制点 / 改字 / 非法点数拒 / 撤销两步清空）');
+                                    return { 读回: e && { type: e.type, text: e.text, size: e.size, color: e.color, points: pp }, 非法: bad.ok, 改字: e2 && e2.text, 撤销后剩: gone };
+                                });
+
+                                // ② 取色
+                                await step('取色', async function () {
+                                    clear(); await call('set_platforms', { platforms: ['dianshang'] });
+                                    var im = await call('add_image', { path: IMG, frame: 1 });
+                                    var r1 = await call('sample_color', { frame: 1, x: 0.2, y: 0.2 });
+                                    var r2 = await call('sample_color', { frame: 1, x: 0.8, y: 0.8 });
+                                    var r3 = await call('sample_color', { x: 0.5, y: 0.5 });
+                                    var c1 = rgbc(r1.color || '#000000'), c2 = rgbc(r2.color || '#000000');
+                                    var ok = im.ok && r1.ok && c1[0] > 200 && c1[1] < 60 && c1[2] < 60
+                                        && r2.ok && c2[0] > 200 && c2[1] > 200 && c2[2] < 60 && r3.ok;
+                                    if (!ok) failed.push('取色（1:1 框左上=红 / 右下=黄 / 整块画布也能取）');
+                                    return { 左上: r1.color, 右下: r2.color, 画布: r3.color };
+                                });
+
+                                // ③ 提色
+                                await step('提色', async function () {
+                                    var r = await call('extract_palette', { frame: 1, count: 8 });
+                                    var quad = ['#FF0000', '#00FF00', '#0000FF', '#FFFF00'];
+                                    var covered = [false, false, false, false];
+                                    (r.colors || []).forEach(function (c) {
+                                        var a = rgbc(c);
+                                        quad.forEach(function (q, i) {
+                                            var b = rgbc(q);
+                                            var d = Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
+                                            if (d < 90) covered[i] = true;
+                                        });
+                                    });
+                                    var ok = r.ok && (r.colors || []).length >= 4 && covered.every(function (v) { return v; });
+                                    if (!ok) failed.push('提色（四象限都被提到）');
+                                    return { colors: r.colors, 覆盖: covered };
+                                });
+
+                                // ④ 常驻颜色
+                                await step('常驻颜色', async function () {
+                                    var before = await call('get_color_pins');
+                                    var set = await call('set_color_pins', { colors: ['#FF0000', '#00FF00', '#0000FF', '#FFFF00', null, ''] });
+                                    var get = await call('get_color_pins');
+                                    var bad = await call('set_color_pins', { colors: ['不是颜色'] });
+                                    var want = ['#FF0000', '#00FF00', '#0000FF', '#FFFF00', null, null];
+                                    var same = JSON.stringify(get.colors) === JSON.stringify(want);
+                                    var ok = before.ok && set.ok && same && bad.ok === false;
+                                    if (!ok) failed.push('常驻颜色（写 6 格 / 读回一致 / 非法色拒绝）');
+                                    return { 前: before.colors, 读回: get.colors, 非法: bad.ok };
+                                });
+
+                                // ⑤ 配色方案
+                                await step('配色方案', async function () {
+                                    var list = await call('get_color_scheme', {});
+                                    var r = await call('get_color_scheme', { scheme: 'complement', color: '#FF0000' });
+                                    var bad = await call('get_color_scheme', { scheme: 'nope', color: '#FF0000' });
+                                    var cols = r.colors || [];
+                                    var ok = list.ok && (list.schemes || []).length >= 10 && r.ok && cols.length === 2
+                                        && String(cols[0]).toUpperCase() !== String(cols[1]).toUpperCase() && bad.ok === false;
+                                    if (!ok) failed.push('配色方案（列表 ≥10 / 互补 2 色且不同 / 未知方案拒绝）');
+                                    return { 方案数: (list.schemes || []).length, 互补: cols, 非法: bad.ok };
+                                });
+
+                                // ⑥ 参考线版面
+                                await step('参考线版面', async function () {
+                                    await call('clear_guides', { confirm: true });
+                                    await call('set_guide_preferences', { lock: false });
+                                    var r = await call('new_guide_layout', { frame: 1, cols: 2, rows: 0 });
+                                    var g1 = await call('get_guides');
+                                    var lock = await call('set_guide_preferences', { lock: true, rulers: true, smart: false });
+                                    var blocked = await call('new_guide_layout', { frame: 1, cols: 3 });
+                                    var unlock = await call('set_guide_preferences', { lock: false, rulers: false, smart: true });
+                                    var cl = await call('clear_guides', { confirm: true });
+                                    var g2 = await call('get_guides');
+                                    var ok = r.ok && r.added === 3 && g1.guides.length === 3
+                                        && g1.guides.every(function (g) { return g.frame === 1; })
+                                        && lock.ok && lock.preferences.lock === true && lock.preferences.rulers === true && lock.preferences.smart === false
+                                        && blocked.ok === false
+                                        && unlock.ok && unlock.preferences.rulers === false && unlock.preferences.smart === true
+                                        && cl.cleared === 3 && g2.guides.length === 0;
+                                    if (!ok) failed.push('参考线版面（2 列 = 3 条 / 锁定挡加 / 标尺·智能开关 / 清空）');
+                                    return { added: r.added, 条数: g1.guides.length, 偏好: lock.preferences, 锁定挡: blocked.ok, 清空: cl.cleared };
+                                });
+
+                                // ⑦ 框变换
+                                await step('框变换', async function () {
+                                    clear(); await call('set_platforms', { platforms: ['douyin'] });
+                                    var t = await call('add_text', { text: '跟着走', frame: 1, size: 36, shadow: false });
+                                    out.__canvas = await call('get_canvas');
+                                    var f0 = (out.__canvas.frames || [])[0], e0 = el(t.element.id);
+                                    var r1 = await call('set_frame_transform', { frame: 1, scale: 1.2 });
+                                    out.__canvas = await call('get_canvas');
+                                    var f1 = (out.__canvas.frames || [])[0], e1 = el(t.element.id);
+                                    var r2 = await call('set_frame_transform', { frame: 1, offset_x: 30, offset_y: 0 });
+                                    out.__canvas = await call('get_canvas');
+                                    var f2 = (out.__canvas.frames || [])[0];
+                                    var okScale = r1.ok && Math.abs(f1.scale - 1.2) < 0.02 && Math.abs(f1.rect.width / f0.rect.width - 1.2) < 0.03;
+                                    var okKeep = e1 && Math.abs(e1.x - e0.x) < 0.02 && Math.abs(e1.y - e0.y) < 0.02;
+                                    var okOff = r2.ok && f2.offset.x === 30 && Math.abs((f2.rect.x - f1.rect.x) - 30) < 1.5;
+                                    await call('undo', {}); out.__canvas = await call('get_canvas'); var f3 = (out.__canvas.frames || [])[0];
+                                    await call('undo', {}); out.__canvas = await call('get_canvas'); var f4 = (out.__canvas.frames || [])[0];
+                                    var okUndo = f3 && f3.offset.x === 0 && Math.abs(f3.scale - 1.2) < 0.02 && f4 && Math.abs(f4.scale - 1) < 0.02;
+                                    var ok = okScale && okKeep && okOff && okUndo;
+                                    if (!ok) failed.push('框变换（scale 1.2 框变宽 / 元素相对位置不漂 / offset 30 右移 / 两次撤销复原）');
+                                    return { 框宽: [Math.round(f0.rect.width), Math.round(f1.rect.width), Math.round(f2.rect.width)],
+                                             scale: [f0.scale, f1.scale, f2.scale], offsetX: [f1.offset.x, f2.offset.x],
+                                             撤销: [f3 && f3.scale, f3 && f3.offset.x, f4 && f4.scale], 元素x: [e0.x, e1.x] };
+                                });
+                            } catch (e) { out['场景异常'] = String(e && e.stack || e); failed.push('总场景异常：' + String(e && e.message || e)); }
+                            finally {
+                                try { delete out.__canvas; } catch (e) { /* 明细临时缓存 */ }
+                                try { GUIDE.list.length = 0; gdRedraw(); } catch (e) { /* 参考线收尾 */ }
+                                try { gdSetPref('rulers', false); gdSetPref('smart', true); } catch (e) { /* 视图开关收尾 */ }
+                            }
+                            return { ok: failed.length === 0, failed: failed, detail: out };
+                        })()`);
+                        // 主进程：单框 / 自定义像素 / 默认三种导出（画布上还留着第 ⑦ 步的抖音两块框 + 文字）
+                        const dirA = 'C:/tmp/cm_agentparity_a', dirB = 'C:/tmp/cm_agentparity_b';
+                        try { fsSync.rmSync(dirA, { recursive: true, force: true }); } catch (e) { /* 没有 */ }
+                        try { fsSync.rmSync(dirB, { recursive: true, force: true }); } catch (e) { /* 没有 */ }
+                        const pngWH = (p) => { try { const b = fsSync.readFileSync(p); return b.readUInt32BE(16) + 'x' + b.readUInt32BE(20); } catch (e) { return 'ERR'; } };
+                        const exArgsA = { dir: dirA, frames: [1], width: 300, height: 400 };
+                        const ra = await MCP.handleRpc({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'export_images', arguments: exArgsA } });
+                        try { exA = JSON.parse(ra.result.content.find((c) => c.type === 'text').text); } catch (e) { exA = null; }
+                        const rb = await MCP.handleRpc({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'export_images', arguments: { dir: dirB } } });
+                        try { exB = JSON.parse(rb.result.content.find((c) => c.type === 'text').text); } catch (e) { exB = null; }
+                        const filesA = (exA && exA.files ? exA.files : []).map((f) => path.basename(f.path) + '=' + pngWH(f.path));
+                        const filesB = (exB && exB.files ? exB.files : []).map((f) => path.basename(f.path) + '=' + pngWH(f.path)).sort();
+                        const exOk = !!(exA && exA.ok && filesA.length === 1 && filesA[0].indexOf('=300x400') > 0
+                            && exB && exB.ok && filesB.length === 2
+                            && filesB.some((s) => s.indexOf('=1080x1440') > 0) && filesB.some((s) => s.indexOf('=1440x1080') > 0));
+                        cp.detail = cp.detail || {};
+                        cp.detail['导出'] = { 单框自定义: filesA, 默认全导: filesB };
+                        if (!exOk) { cp.ok = false; (cp.failed = cp.failed || []).push('导出（单框 300×400 / 默认每框平台像素）'); }
+                    } catch (e) {
+                        cp = { ok: false, failed: ['主进程准备/执行异常：' + String(e && e.message || e)], detail: {} };
+                    } finally {
+                        try { await fs.unlink(imgP); } catch (e) { /* 文件未创建或已清理 */ }
+                        try {
+                            await jsx(`(function () { layerNodes().forEach(function (n) { n.destroy(); }); tr.nodes([]); selectedNode = null;
+                                activePlatforms.slice().forEach(function (k) { togglePlatform(k); }); mainPlatform = null;
+                                syncPlatformMenu(); drawPlatformFrame(); refreshLayers(); window.__cmHistoryReset(); return true; })()`);
+                        } catch (e) { /* 收尾失败不影响判据 */ }
+                    }
+                    agentParityOk = !!(cp && cp.ok);
+                    console.log('[cover-maker] selftest agentparity 明细:', JSON.stringify(cp && cp.detail || {}));
+                    console.log('[cover-maker] selftest agentparity 判据:', JSON.stringify({ 没过的步: cp && cp.failed || ['无结果'], 'Agent能力补齐第三批': agentParityOk }));
+                }
+
+                // Phase 1 第 2、3 件（2026-11-11）：measure_reference（参考图 → 数据）/ compare_with_reference（画布 vs 参考）
+                //   夹具在渲染层用 canvas 现画（不落盘）：300×400、底色 #F2F2F2、红块 0.10/0.08/0.45/0.20、
+                //   蓝块 0.10/0.35/0.80/0.15、40px 黑字在 y≈0.72
+                //   ① 量测：背景 / 两块 bbox（±0.02）/ 颜色（距离 ≤25）/ 文字块（y 在 0.68~0.80、字号 ±15%）
+                //   ② 比对：空画布 S0 → 铺底色 S1 → 补蓝块 S2，必须 S2 > S1 + 0.02 且 S1 ≥ S0；空画布时 worst 命中红块区域
+                //   ③ 没设参考图时 compare 必须报错
+                let agentCopyOk = true;
+                if (process.argv.includes('--agentcopy')) {
+                    let cc = { ok: false, failed: ['场景没有运行'] };
+                    try {
+                        cc = await jsx(`(async function () {
+                            var out = {}, failed = [];
+                            var call = function (n, a) { return window.__cmAgent.call(n, a || {}); };
+                            var step = async function (label, fn) {
+                                try { out[label] = await fn(); }
+                                catch (e) { out[label] = { error: String(e && e.message || e), stack: String(e && e.stack || '').slice(0, 600) }; failed.push(label + ' 异常'); }
+                            };
+                            var hex2rgb = function (h) { return [parseInt(String(h).substr(1,2),16), parseInt(String(h).substr(3,2),16), parseInt(String(h).substr(5,2),16)]; };
+                            var dist = function (a, b) { var A = hex2rgb(a), B = hex2rgb(b); return Math.sqrt(2*Math.pow(A[0]-B[0],2) + 4*Math.pow(A[1]-B[1],2) + 3*Math.pow(A[2]-B[2],2)) / 3; };
+                            var nearBox = function (b, x, y, w, h, tol) { return b && Math.abs(b.x-x) <= tol && Math.abs(b.y-y) <= tol && Math.abs(b.w-w) <= tol && Math.abs(b.h-h) <= tol; };
+                            var inBox = function (b, x, y, w, h) { return b && b.x >= x - 0.07 && b.y >= y - 0.07 && b.x <= x + w + 0.07 && b.y <= y + h + 0.07; };
+                            try {
+                                await call('set_platforms', { platforms: ['xiaohongshu'] });
+                                layerNodes().forEach(function (n) { n.destroy(); }); tr.nodes([]); selectedNode = null; window.__cmHistoryReset();
+                                var cv0 = await call('get_canvas');
+                                var fr = (cv0.frames || [])[0];
+                                var frameH = fr.rect.height, frameW = fr.rect.width;
+
+                                // 夹具参考图
+                                var cvf = document.createElement('canvas'); cvf.width = 300; cvf.height = 400;
+                                var g = cvf.getContext('2d');
+                                g.fillStyle = '#F2F2F2'; g.fillRect(0, 0, 300, 400);
+                                g.fillStyle = '#C81E1E'; g.fillRect(30, 32, 135, 80);       // x .10  y .08  w .45 h .20
+                                g.fillStyle = '#1E64C8'; g.fillRect(30, 140, 240, 60);      // x .10  y .35  w .80 h .15
+                                g.fillStyle = '#111111'; g.font = 'bold 40px sans-serif'; g.textBaseline = 'top';
+                                g.fillText('MEASURE', 30, 288);
+                                var REFURL = cvf.toDataURL('image/png');
+
+                                var noRef = await call('compare_with_reference', {});
+
+                                await step('设置参考图', async function () {
+                                    var set = await call('set_reference_image', { path: REFURL, opacity: 0.35 });
+                                    var ok = set.ok && set.reference && set.reference.name === '参考图（内存）' && set.reference.opacity === 0.35;
+                                    if (!ok) failed.push('设置参考图（data URL 也能用）');
+                                    return { 读回: set.reference };
+                                });
+
+                                await step('量测', async function () {
+                                    var m = await call('measure_reference', {});
+                                    var red = (m.regions || []).filter(function (r) { return nearBox(r.bbox, 0.10, 0.08, 0.45, 0.20, 0.03); })[0];
+                                    var blue = (m.regions || []).filter(function (r) { return nearBox(r.bbox, 0.10, 0.35, 0.80, 0.15, 0.03); })[0];
+                                    var txt = (m.text_blocks || [])[0];
+                                    var wantSize = 40 * frameH / 400;
+                                    var okBg = m.background && dist(m.background, '#F2F2F2') <= 8;
+                                    var okRed = red && dist(red.color, '#C81E1E') <= 25 && red.fill === 'solid';
+                                    var okBlue = blue && dist(blue.color, '#1E64C8') <= 25;
+                                    var okTxt = txt && txt.bbox.y >= 0.66 && txt.bbox.y <= 0.82
+                                        && Math.abs(txt.est_size - wantSize) <= wantSize * 0.18;
+                                    var ok = m.ok && okBg && okRed && okBlue && okTxt;
+                                    if (!ok) failed.push('量测（背景 / 红块 / 蓝块 / 文字区与字号）');
+                                    return { 背景: m.background, 红块: red, 蓝块: blue, 文字: txt, 字号期望: Math.round(wantSize),
+                                             色块数: (m.regions || []).length, 主色: m.palette };
+                                });
+
+                                await step('比对（空画布 → 底色 → 补块）', async function () {
+                                    var c0 = await call('compare_with_reference', { grid: 8 });
+                                    var hitRed0 = (c0.worst || []).some(function (w) { return inBox(w.bbox, 0.10, 0.08, 0.45, 0.20); });
+                                    await call('add_shape', { shape: 'rect', frame: 1, width: 1, height: 1, fill: '#F2F2F2' });
+                                    var c1 = await call('compare_with_reference', { grid: 8 });
+                                    var m = await call('measure_reference', {});
+                                    var blue = (m.regions || []).filter(function (r) { return nearBox(r.bbox, 0.10, 0.35, 0.80, 0.15, 0.03); })[0];
+                                    var bb = blue ? blue.bbox : { x: 0.10, y: 0.35, w: 0.80, h: 0.15 };
+                                    var shortSide = Math.min(frameW, frameH);
+                                    await call('add_shape', { shape: 'rect', frame: 1,
+                                        width: bb.w * frameW / shortSide, height: bb.h * frameH / shortSide,
+                                        x: bb.x + bb.w / 2, y: bb.y + bb.h / 2, fill: '#1E64C8' });
+                                    var c2 = await call('compare_with_reference', { grid: 8 });
+                                    var ok = c0.ok && c0.similarity < 0.85 && hitRed0
+                                        && c1.ok && c1.similarity >= c0.similarity
+                                        && c2.ok && c2.similarity > c1.similarity + 0.02 && c2.similarity > c0.similarity;
+                                    if (!ok) failed.push('比对（空画布最低 / worst 命中红块 / 铺底色不降 / 补蓝块明显提升）');
+                                    return { 无参考图时: noRef.ok === false ? '报错(对)' : '没报错(错)', 空画布: c0.similarity, 铺底色后: c1.similarity,
+                                             补蓝块后: c2.similarity, 空画布worst: (c0.worst || []).slice(0, 3) };
+                                });
+                            } catch (e) { out['场景异常'] = String(e && e.stack || e); failed.push('总场景异常：' + String(e && e.message || e)); }
+                            finally {
+                                try { clearReferenceImage(); } catch (e) { /* 收尾 */ }
+                                try { layerNodes().forEach(function (n) { n.destroy(); }); tr.nodes([]); selectedNode = null; } catch (e) { /* 同上 */ }
+                                try { activePlatforms.slice().forEach(function (k) { togglePlatform(k); }); mainPlatform = null; syncPlatformMenu(); drawPlatformFrame(); refreshLayers(); window.__cmHistoryReset(); } catch (e) { /* 同上 */ }
+                            }
+                            return { ok: failed.length === 0, failed: failed, detail: out };
+                        })()`);
+                    } catch (e) {
+                        cc = { ok: false, failed: ['主进程准备/执行异常：' + String(e && e.message || e)], detail: {} };
+                    }
+                    agentCopyOk = !!(cc && cc.ok);
+                    console.log('[cover-maker] selftest agentcopy 明细:', JSON.stringify(cc && cc.detail || {}));
+                    console.log('[cover-maker] selftest agentcopy 判据:', JSON.stringify({ 没过的步: cc && cc.failed || ['无结果'], '复刻量测与比对（Phase1-2/3）': agentCopyOk }));
+                }
+
+                // Phase 1 第 1 件（2026-11-11 用户「开工」）：参考图层
+                //   ① 没设置 = get_canvas.reference 为 null；clear 幂等
+                //   ② overlay 0.4 → 读回名字 / 透明度 / 模式；参考图层有 1 个节点且可见
+                //   ③ 不进出品：同一块框 encodeRect 两次（设参考图前 / 后）**逐字符一致**；withHiddenDecor（导出那条路）同样一致
+                //   ④ 取样不受污染：整框红底的画布 + 纯绿参考图 → sample_color 仍取到红
+                //   ⑤ 参考图不是画布元素：elements 数量不变、layerNodes 里没有它
+                //   ⑥ side 模式：画布上的节点隐藏、右侧 DOM 面板可见；clear 后全清
+                let agentRefOk = true;
+                if (process.argv.includes('--agentref')) {
+                    const refPng = 'C:/tmp/cm_agentref_' + process.pid + '.png';
+                    let cr = { ok: false, failed: ['场景没有运行'] };
+                    try {
+                        await fs.mkdir(path.dirname(refPng), { recursive: true });
+                        const GQ = 16, gbuf = Buffer.alloc(GQ * GQ * 4);
+                        for (let i = 0; i < GQ * GQ; i++) { gbuf[i * 4] = 0; gbuf[i * 4 + 1] = 255; gbuf[i * 4 + 2] = 0; gbuf[i * 4 + 3] = 255; }   // BGRA 纯绿
+                        await fs.writeFile(refPng, nativeImage.createFromBitmap(gbuf, { width: GQ, height: GQ }).toPNG());
+                        // 负对照：--agentref --norefhide → 参考层不被藏，③ 不进出品 / ④ 取样必须变红
+                        if (process.argv.includes('--norefhide')) await jsx('window.__cmNoRefHide = true');
+                        cr = await jsx(`(async function () {
+                            var out = {}, failed = [];
+                            var REFIMG = ${JSON.stringify(refPng)};
+                            var call = function (n, a) { return window.__cmAgent.call(n, a || {}); };
+                            var step = async function (label, fn) {
+                                try { out[label] = await fn(); }
+                                catch (e) { out[label] = { error: String(e && e.message || e), stack: String(e && e.stack || '').slice(0, 600) }; failed.push(label + ' 异常'); }
+                            };
+                            try {
+                                await call('set_platforms', { platforms: ['xiaohongshu'] });
+                                layerNodes().forEach(function (n) { n.destroy(); }); tr.nodes([]); selectedNode = null; window.__cmHistoryReset();
+                                var sh = await call('add_shape', { shape: 'rect', frame: 1, width: 1, height: 1, fill: '#FF0000' });
+                                var cv0 = await call('get_canvas');
+                                var f0 = (cv0.frames || [])[0];
+                                var rect = { x: f0.rect.x, y: f0.rect.y, width: f0.rect.width, height: f0.rect.height };
+
+                                // ③ 设参考图前后的成品像素
+                                var shot1 = encodeRect(rect, { w: 200, h: 266 });
+                                var shot1h = withHiddenDecor(function () { return encodeRect(rect, { w: 200, h: 266 }); });
+
+                                await step('参考图层', async function () {
+                                    var none = await call('get_canvas');
+                                    var clear0 = await call('clear_reference_image', {});
+                                    var set = await call('set_reference_image', { path: REFIMG, opacity: 0.4 });
+                                    var cv = await call('get_canvas');
+                                    var nodes = REF.layer ? REF.layer.find('.参考图') : [];
+                                    var ok = none.reference === null && clear0.ok && clear0.cleared === false
+                                        && set.ok && set.reference && set.reference.opacity === 0.4 && set.reference.mode === 'overlay'
+                                        && cv.reference && cv.reference.name === set.reference.name && cv.reference.opacity === 0.4
+                                        && nodes.length === 1 && nodes[0].visible() === true;
+                                    if (!ok) failed.push('参考图层（读回 / 节点存在且可见 / 未设置时是 null）');
+                                    return { 未设置: none.reference, 读回: cv.reference, 节点: nodes.length, 可见: nodes[0] && nodes[0].visible() };
+                                });
+
+                                await step('不进出品', async function () {
+                                    var shot2 = encodeRect(rect, { w: 200, h: 266 });
+                                    var shot2h = withHiddenDecor(function () { return encodeRect(rect, { w: 200, h: 266 }); });
+                                    var ok = shot1 === shot2 && shot1h === shot2h;
+                                    if (!ok) failed.push('不进出品（toCanvas 与导出两条路都不含参考图）');
+                                    return { 直出一致: shot1 === shot2, 导出路径一致: shot1h === shot2h };
+                                });
+
+                                await step('取样不受污染', async function () {
+                                    // 参考图是纯绿，画布整框是红：藏了参考层才取得到红
+                                    var s = await call('sample_color', { frame: 1, x: 0.5, y: 0.5 });
+                                    var c = String(s.color || '').toUpperCase();
+                                    var ok = s.ok && c === '#FF0000';
+                                    if (!ok) failed.push('取样不受污染（参考图层不该被吸到）');
+                                    return { 取到: c };
+                                });
+
+                                await step('不是画布元素', async function () {
+                                    var cv = await call('get_canvas');
+                                    var inNodes = layerNodes().filter(function (n) { return n.name && n.name() === '参考图'; }).length;
+                                    var ok = (cv.elements || []).length === 1 && inNodes === 0;
+                                    if (!ok) failed.push('不是画布元素（不进 elements / layerNodes）');
+                                    return { 元素数: (cv.elements || []).length, 画布节点里的参考图: inNodes };
+                                });
+
+                                await step('side 模式与清除', async function () {
+                                    var side = await call('set_reference_image', { path: REFIMG, mode: 'side' });
+                                    var nodeVis = REF.layer.find('.参考图')[0].visible();
+                                    var dom = document.getElementById('cmRefSide');
+                                    var domOn = !!(dom && dom.style.display !== 'none');
+                                    var back = await call('set_reference_image', { path: REFIMG });
+                                    var nodeVis2 = REF.layer.find('.参考图')[0].visible();
+                                    var clr = await call('clear_reference_image', {});
+                                    var cv = await call('get_canvas');
+                                    var left = REF.layer ? REF.layer.find('.参考图').length : 0;
+                                    var domOff = !dom || dom.style.display === 'none';
+                                    var ok = side.ok && side.reference.mode === 'side' && nodeVis === false && domOn
+                                        && back.ok && nodeVis2 === true && clr.ok && clr.cleared === true
+                                        && cv.reference === null && left === 0 && domOff;
+                                    if (!ok) failed.push('side 模式（画布隐藏 / 右侧面板可见）与清除');
+                                    return { side画布可见: nodeVis, 右侧面板: domOn, 回overlay可见: nodeVis2, 清除后剩: left, 读回: cv.reference };
+                                });
+                            } catch (e) { out['场景异常'] = String(e && e.stack || e); failed.push('总场景异常：' + String(e && e.message || e)); }
+                            finally {
+                                try { clearReferenceImage(); } catch (e) { /* 收尾 */ }
+                                try { layerNodes().forEach(function (n) { n.destroy(); }); tr.nodes([]); selectedNode = null; } catch (e) { /* 同上 */ }
+                                try { activePlatforms.slice().forEach(function (k) { togglePlatform(k); }); mainPlatform = null; syncPlatformMenu(); drawPlatformFrame(); refreshLayers(); window.__cmHistoryReset(); } catch (e) { /* 同上 */ }
+                            }
+                            return { ok: failed.length === 0, failed: failed, detail: out };
+                        })()`);
+                    } catch (e) {
+                        cr = { ok: false, failed: ['主进程准备/执行异常：' + String(e && e.message || e)], detail: {} };
+                    } finally {
+                        try { await fs.unlink(refPng); } catch (e) { /* 没建或已清 */ }
+                    }
+                    agentRefOk = !!(cr && cr.ok);
+                    console.log('[cover-maker] selftest agentref 明细:', JSON.stringify(cr && cr.detail || {}));
+                    console.log('[cover-maker] selftest agentref 判据:', JSON.stringify({ 没过的步: cr && cr.failed || ['无结果'], '参考图层（复刻 Phase1-1）': agentRefOk }));
+                }
+
+                // 第四批（2026-11-11 用户「还有剩下的也补齐」）：字体库 / 贴纸库 / 自定义目标比例
+                //   ① 字体库：导入 C:/Windows/Fonts/simkai.ttf → list_fonts.imported 多一个 → 不传 confirm 拒绝删 → 传了能删掉
+                //   ② 存入字体库：画一段字 → save_to_font_library → 字体库条目 +1（按返回 id 核对）→ 收尾删掉
+                //   ③ 贴纸库：list_stickers 15 个内置 → 导入 1px png → imported +1 → 删要 confirm → 删掉；藏 🔥 → 恢复
+                //   ④ 自定义目标比例：加 300×400 → 成为当前目标 → 改 2:3 框 → 改名 → 列表读回 → 删要 confirm（收尾删）
+                //   主进程再验：勾上自定义目标后导出，PNG 头必须真是 300×400
+                let agentLibOk = true;
+                if (process.argv.includes('--agentlib')) {
+                    const libImg = 'C:/tmp/cm_agentlib_' + process.pid + '.png';
+                    const fontFix = 'C:/Windows/Fonts/simkai.ttf';
+                    let cl = { ok: false, failed: ['场景没有运行'] };
+                    let libEx = null;
+                    try {
+                        await fs.mkdir(path.dirname(libImg), { recursive: true });
+                        // 夹具用 8×8 真位图（1×1 的 base64 小图 nativeImage 解不出来 → 贴纸库会按「无效图片」跳过，那不是被测代码的问题）
+                        const LQ = 8, lbuf = Buffer.alloc(LQ * LQ * 4);
+                        for (let i = 0; i < LQ * LQ; i++) { lbuf[i * 4] = 40; lbuf[i * 4 + 1] = 160; lbuf[i * 4 + 2] = 90; lbuf[i * 4 + 3] = 255; }
+                        await fs.writeFile(libImg, nativeImage.createFromBitmap(lbuf, { width: LQ, height: LQ }).toPNG());
+                        const hasFontFix = fsSync.existsSync(fontFix);
+                        cl = await jsx(`(async function () {
+                            var out = {}, failed = [];
+                            var IMG = ${JSON.stringify(libImg)}, FONT = ${JSON.stringify(fontFix)}, HASFONT = ${JSON.stringify(hasFontFix)};
+                            var call = function (n, a) { return window.__cmAgent.call(n, a || {}); };
+                            var step = async function (label, fn) {
+                                try { out[label] = await fn(); }
+                                catch (e) { out[label] = { error: String(e && e.message || e), stack: String(e && e.stack || '').slice(0, 600) }; failed.push(label + ' 异常'); }
+                            };
+                            var lib = window.coverApp && window.coverApp.library, tpl = window.coverApp && window.coverApp.templates;
+                            try {
+                                // ① 字体库：导入 → 读回 → 删
+                                await step('字体库', async function () {
+                                    if (!HASFONT) return { skipped: '没有字体夹具 ' + FONT };
+                                    var before = await call('list_fonts', { limit: 1 });
+                                    var im = await call('import_fonts', { paths: [FONT] });
+                                    var after = await call('list_fonts', { limit: 1 });
+                                    var fam = (im.added || [])[0] && im.added[0].family;
+                                    var inList = !!(after.imported || []).some(function (f) { return f === fam; });
+                                    var noConfirm = await call('remove_font', { family: fam });
+                                    var rm = await call('remove_font', { family: fam, confirm: true });
+                                    var last = await call('list_fonts', { limit: 1 });
+                                    var gone = !(last.imported || []).some(function (f) { return f === fam; });
+                                    var ok = im.ok && inList && noConfirm.ok === false && rm.ok && gone;
+                                    if (!ok) failed.push('字体库（导入 / list_fonts 读回 / 不传 confirm 拒绝 / 传了能删）');
+                                    return { 字体: fam, 导入前: (before.imported || []).length, 导入后: (after.imported || []).length,
+                                             含: inList, 不传confirm: noConfirm.ok, 删除: rm.ok, 删后还在: !gone };
+                                });
+
+                                // ② 选中文字存进字体库
+                                await step('存入字体库', async function () {
+                                    layerNodes().forEach(function (n) { n.destroy(); }); tr.nodes([]); selectedNode = null; mainLayer.draw(); window.__cmHistoryReset();
+                                    await call('set_platforms', { platforms: ['xiaohongshu'] });
+                                    var t = await call('add_text', { text: '存我', frame: 1, size: 40, color: '#2244AA' });
+                                    var beforeIds = {};
+                                    if (tpl && tpl.list) { ((await tpl.list()) || []).forEach(function (x) { beforeIds[x.id] = 1; }); }
+                                    var r = await call('save_to_font_library', { id: t.element && t.element.id, name: 'AI 存的样式' });
+                                    var list = (tpl && tpl.list) ? (await tpl.list()) : [];
+                                    var added = list.filter(function (x) { return !beforeIds[x.id]; });
+                                    var ok = r.ok && added.length === 1 && added[0].id === r.id && added[0].name === 'AI 存的样式';
+                                    if (ok && tpl && tpl.remove) { await tpl.remove(r.id); }
+                                    if (!ok) failed.push('存入字体库（新增 1 条、id 与名字对得上）');
+                                    return { 新增: added.length, id: r.id, 名字: added[0] && added[0].name, 段数: r.count };
+                                });
+
+                                // ③ 贴纸库：列 / 导入 / 删 / 藏 / 恢复
+                                await step('贴纸库', async function () {
+                                    var l0 = await call('list_stickers', {});
+                                    var before = (l0.imported || []).length;
+                                    var im = await call('import_stickers', { paths: [IMG] });
+                                    var l1 = await call('list_stickers', {});
+                                    var newId = (im.added || [])[0] && im.added[0].id;
+                                    var noConfirm = await call('remove_sticker', { id: newId });
+                                    var rm = await call('remove_sticker', { id: newId, confirm: true });
+                                    var l2 = await call('list_stickers', {});
+                                    var hide = await call('hide_builtin_sticker', { emoji: '🔥' });
+                                    var hid = (hide.hidden || []).indexOf('🔥') >= 0;
+                                    var badEmoji = await call('hide_builtin_sticker', { emoji: '不是表情' });
+                                    var back = await call('restore_builtin_stickers', {});
+                                    var ok = l0.ok && (l0.builtin || []).length >= 10 && im.ok
+                                        && (l1.imported || []).length === before + 1 && newId
+                                        && noConfirm.ok === false && rm.ok && (l2.imported || []).length === before
+                                        && hid && badEmoji.ok === false && (back.hidden || []).length === 0;
+                                    if (!ok) failed.push('贴纸库（导入 +1 / 删要 confirm / 藏内置表情 / 恢复）');
+                                    return { 内置: (l0.builtin || []).length, 导入前: before, 导入后: (l1.imported || []).length,
+                                             导入结果: im, 新id: newId, 不传confirm: noConfirm.ok, 删除: rm.ok, 删后: (l2.imported || []).length,
+                                             藏: hid, 恢复: (back.hidden || []).length };
+                                });
+
+                                // ④ 自定义目标比例：加 → 勾上 → 改名 → 列表 → （留给主进程导出）→ 删
+                                await step('自定义比例', async function () {
+                                    var l0 = await call('list_custom_ratios', {});
+                                    var a = await call('add_custom_ratio', { width: 300, height: 400, name: '测试目标' });
+                                    var dup = await call('add_custom_ratio', { width: 300, height: 400 });
+                                    var bad = await call('add_custom_ratio', { width: 10, height: 400 });
+                                    var sp = await call('set_platforms', { platforms: [a.key] });
+                                    var l1 = await call('list_custom_ratios', {});
+                                    var rec1 = (l1.ratios || []).filter(function (r) { return r.key === a.key; })[0];
+                                    var rn = await call('rename_custom_ratio', { id: a.key, name: '出口图 300' });
+                                    var l2 = await call('list_custom_ratios', {});
+                                    var rec2 = (l2.ratios || []).filter(function (r) { return r.key === a.key; })[0];
+                                    var canvas = await call('get_canvas');
+                                    var ok = l0.ok && a.ok && a.name === '测试目标' && dup.ok === false && bad.ok === false
+                                        && sp.ok && JSON.stringify(sp.platforms) === JSON.stringify([a.key])
+                                        && rec1 && rec1.active === true && rec1.width === 300 && rec1.height === 400
+                                        && rn.ok && rec2 && rec2.name === '出口图 300'
+                                        && (canvas.frames || []).length === 1 && canvas.frames[0].export_size === '300x400';
+                                    if (!ok) failed.push('自定义比例（加 300×400 / 重名拒 / 非法拒 / 勾上 / 改名 / 框 = 1 块 300×400）');
+                                    return { 前: (l0.ratios || []).length, key: a.key, 读回: rec1, 改名后: rec2 && rec2.name,
+                                             框: canvas.frames, 重复: dup.ok, 非法: bad.ok };
+                                });
+                            } catch (e) { out['场景异常'] = String(e && e.stack || e); failed.push('总场景异常：' + String(e && e.message || e)); }
+                            finally { try { delete out.__canvas; } catch (e) { /* 明细缓存 */ } }
+                            return { ok: failed.length === 0, failed: failed, detail: out };
+                        })()`);
+                        // 主进程：自定义目标 300×400 真导一张（PNG 头验像素），再收拾自定义比例
+                        const libDir = 'C:/tmp/cm_agentlib_export';
+                        try { fsSync.rmSync(libDir, { recursive: true, force: true }); } catch (e) { /* 没有 */ }
+                        const rl = await MCP.handleRpc({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'export_images', arguments: { dir: libDir } } });
+                        try { libEx = JSON.parse(rl.result.content.find((c) => c.type === 'text').text); } catch (e) { libEx = null; }
+                        const libFiles = (libEx && libEx.files ? libEx.files : []).map((f) => {
+                            let wh = 'ERR';
+                            try { const b = fsSync.readFileSync(f.path); wh = b.readUInt32BE(16) + 'x' + b.readUInt32BE(20); } catch (e) { /* 读不到 */ }
+                            return path.basename(f.path) + '=' + wh;
+                        });
+                        const libExOk = !!(libEx && libEx.ok && libFiles.length === 1 && libFiles[0].indexOf('=300x400') > 0);
+                        cl.detail = cl.detail || {};
+                        cl.detail['导出自定义目标'] = libFiles;
+                        if (!libExOk) { cl.ok = false; (cl.failed = cl.failed || []).push('导出自定义目标（PNG 300×400）'); }
+                        // 收尾：删掉自定义比例 + 清平台 + 清画布
+                        try {
+                            const cr = await jsx(`(async function () {
+                                var out = {};
+                                var list = await window.__cmAgent.call('list_custom_ratios', {});
+                                for (var i = 0; i < (list.ratios || []).length; i++) {
+                                    var r = list.ratios[i];
+                                    if (r.name === '测试目标' || r.name === '出口图 300') out.deleted = await window.__cmAgent.call('remove_custom_ratio', { id: r.key, confirm: true });
+                                }
+                                await window.__cmAgent.call('set_platforms', { platforms: [] });
+                                layerNodes().forEach(function (n) { n.destroy(); }); tr.nodes([]); selectedNode = null;
+                                drawPlatformFrame(); refreshLayers(); window.__cmHistoryReset();
+                                out.left = (await window.__cmAgent.call('list_custom_ratios', {})).total;
+                                return out; })()`);
+                            cl.detail['收尾'] = cr;
+                        } catch (e) { cl.detail['收尾'] = String(e && e.message || e); }
+                    } catch (e) {
+                        cl = { ok: false, failed: ['主进程准备/执行异常：' + String(e && e.message || e)], detail: {} };
+                    } finally {
+                        try { await fs.unlink(libImg); } catch (e) { /* 没建或已清 */ }
+                    }
+                    agentLibOk = !!(cl && cl.ok);
+                    console.log('[cover-maker] selftest agentlib 明细:', JSON.stringify(cl && cl.detail || {}));
+                    console.log('[cover-maker] selftest agentlib 判据:', JSON.stringify({ 没过的步: cl && cl.failed || ['无结果'], 'Agent库能力（字体/贴纸/自定义比例）': agentLibOk }));
+                }
+
                 // 可选场景：--syspaste 系统剪贴板里的文字也能粘到画布（2026-11-02 用户「从微信复制文字后在画布上粘贴不上」）
                 //   判据：① 系统剪贴板放两行字、画布上什么都没有 → 真按 Ctrl+V → 多出 1 段文字、内容一字不差
                 //        ② 再按一次 → 又多一段（可以连着粘）
@@ -19698,13 +20266,13 @@ function createWindow() {
                     && frameWhiteOk
                     && r.stickers === stickerExpect
                     && libOk && libPasteOk && libRemoveOk && frameDragOk && stickerPasteOk && multiDragOk && skipOk && skipUiOk
-                    && textPasteOk && textEditOk && sidebarOk && auditOk && undoRedoOk && layerOrderOk && platCheckOk && layersOk                    && imgDropOk && frameStackOk && fillFrameOk && ffLateOk && imgDrag2Ok && frameMoveOk && frameScaleOk && exportOk && exportCancelOk && sharpOk && tplOk && fontUiOk && fontDockOk && ctPanelOk && dockLibsOk && fontWarnOk && whiteShadowOk && imgClipOk && decorClipOk && frameNosOk && layerMultiOk && textPathOk && imgOutOk && moveFrameOk && moveRightOk && shrinkFillOk && frameChildrenOk && frameKeepOk && copyPasteOk && tplRenameOk && zoomShiftOk && zoomShiftPosOk && platShareOk && qProbeOk && keyDelOk && strokeModeOk && macFontsOk && canvasZoomOk && zoomProbeOk && zoomFrameOk && landFillOk && marqueeOk && snapGuideOk && save2libOk && roundtripOk && save2libUiOk && fileMenuOk && fontMenuOk && fontPlanOk && fontImportOk && imgHitOk && fontFallbackOk && textRenderOk && winLifeOk && subjectOk && skewOk && colorsOk && layerEyeOk && layerRenameOk && editScaleOk && splitSwitchOk && cellPanOk && xhs11Ok && clickFrameOk && biliNumOk && creamOk && specialScaleOk && ctxSkewOk && colorSelOk && pasteFitOk && imgSkewOk && defTabOk && splitOk && colorPinsOk && layerCopyOk && subjShadowOk && imageFxOk && copyHexOk && extractGreenOk && board18Ok && layerMultiDragOk && widenOnlyOk && defaultFontOk && textFxOk && eraserOk && photoRotateOk && eyedropOk && toggleFollowOk && updateCheckOk && shapesOk && mcpOk && agentTxOk && agentLayoutOk && agentCreateOk && agentRegOk && agentSubjectOk && agentFontOk && agentOpacityOk && agentLayersOk && textGradOk && textStyleMemoryOk && frameShapeOk && gzhOk && customRatioOk && alignOk && weightOk && guidesOk && shiftDragOk && stickerGradOk && shapeFxOk && cornerOk && bubbleTailOk && tplSubjectOk && sysPasteOk && tplIoOk && agentSkewOk && agentCoreEditOk && agentCoreTools2Ok && gradAngleOk;
+                    && textPasteOk && textEditOk && sidebarOk && auditOk && undoRedoOk && layerOrderOk && platCheckOk && layersOk                    && imgDropOk && frameStackOk && fillFrameOk && ffLateOk && imgDrag2Ok && frameMoveOk && frameScaleOk && exportOk && exportCancelOk && sharpOk && tplOk && fontUiOk && fontDockOk && ctPanelOk && dockLibsOk && fontWarnOk && whiteShadowOk && imgClipOk && decorClipOk && frameNosOk && layerMultiOk && textPathOk && imgOutOk && moveFrameOk && moveRightOk && shrinkFillOk && frameChildrenOk && frameKeepOk && copyPasteOk && tplRenameOk && zoomShiftOk && zoomShiftPosOk && platShareOk && qProbeOk && keyDelOk && strokeModeOk && macFontsOk && canvasZoomOk && zoomProbeOk && zoomFrameOk && landFillOk && marqueeOk && snapGuideOk && save2libOk && roundtripOk && save2libUiOk && fileMenuOk && fontMenuOk && fontPlanOk && fontImportOk && imgHitOk && fontFallbackOk && textRenderOk && winLifeOk && subjectOk && skewOk && colorsOk && layerEyeOk && layerRenameOk && editScaleOk && splitSwitchOk && cellPanOk && xhs11Ok && clickFrameOk && biliNumOk && creamOk && specialScaleOk && ctxSkewOk && colorSelOk && pasteFitOk && imgSkewOk && defTabOk && splitOk && colorPinsOk && layerCopyOk && subjShadowOk && imageFxOk && copyHexOk && extractGreenOk && board18Ok && layerMultiDragOk && widenOnlyOk && defaultFontOk && textFxOk && eraserOk && photoRotateOk && eyedropOk && toggleFollowOk && updateCheckOk && shapesOk && mcpOk && agentTxOk && agentLayoutOk && agentCreateOk && agentRegOk && agentSubjectOk && agentFontOk && agentOpacityOk && agentLayersOk && textGradOk && textStyleMemoryOk && frameShapeOk && gzhOk && customRatioOk && alignOk && weightOk && guidesOk && shiftDragOk && stickerGradOk && shapeFxOk && cornerOk && bubbleTailOk && tplSubjectOk && sysPasteOk && tplIoOk && agentSkewOk && agentCoreEditOk && agentCoreTools2Ok && agentParityOk && agentLibOk && agentRefOk && agentCopyOk && gradAngleOk;
                 console.log('[cover-maker] selftest 分项:', JSON.stringify({
                     基础: !!(r.konva && r.stage && r.bridge), 库面板: popupLayerOk, 底部格子: emptyBoxOk, 底边对齐: bottomOk, 启动开着的库: dockAtStart.currentLib, 框: (onlyArg || framedrag || multidrag || plArg ? r.frames > 0 : r.frames === 0), 框样式: frameWhiteOk,
                     贴纸数: r.stickers === stickerExpect, 素材库: libOk, 素材贴图: libPasteOk, 素材删除: libRemoveOk,
                     框不可拖: frameDragOk, 贴纸贴入: stickerPasteOk, 不叠画: multiDragOk, 拒收: skipOk, 拒收提示: skipUiOk,
                     复制粘贴: copyPasteOk,
-                    文字贴入: textPasteOk, 整组编辑: textEditOk, 左栏: sidebarOk, 体检: auditOk, 撤销重做: undoRedoOk, 'Agent核心编辑契约': agentCoreEditOk, 'Agent核心编辑契约第二组': agentCoreTools2Ok,
+                    文字贴入: textPasteOk, 整组编辑: textEditOk, 左栏: sidebarOk, 体检: auditOk, 撤销重做: undoRedoOk, 'Agent核心编辑契约': agentCoreEditOk, 'Agent核心编辑契约第二组': agentCoreTools2Ok, 'Agent能力补齐第三批': agentParityOk, 'Agent库能力（字体/贴纸/自定义比例）': agentLibOk, '参考图层（复刻 Phase1-1）': agentRefOk, '复刻量测与比对（Phase1-2/3）': agentCopyOk,
                     层序: layerOrderOk, 图层面板: layersOk, 图片进画布: imgDropOk, 参考框: frameStackOk,
                     导出: exportOk, 导出取消: exportCancelOk, 清晰度: sharpOk, 模板: tplOk, 字体库改名: tplRenameOk, 缩放后照片不漂: zoomShiftOk, '页面/窗口变了框位置不变': zoomShiftPosOk, '同比例平台=同一块框': platShareOk, '导出不压缩画质(按目标像素重渲染)': qProbeOk, 'Delete/回车快捷删除': keyDelOk, '外描边/内描边': strokeModeOk, 'Mac 字体表读族名': macFontsOk, 字体: fontUiOk, 字体库格子: fontDockOk, '文字/阴影/描边分页': ctPanelOk, 三库切格子: dockLibsOk, 字体缺失提示: fontWarnOk, 白框立体感: whiteShadowOk, 图片只在框里显示: imgClipOk, '文字/贴纸只在框里显示': decorClipOk, '图层后框编号': frameNosOk, '图层多选/复制图层/拖到框编号复制': layerMultiOk, 文字路径: textPathOk, 图片能移到画布外: imgOutOk, '照片拖到另一块框也显示': moveFrameOk, '缩小后框能拖到画布最右边': moveRightOk, '缩框后照片仍盖满整块框线': shrinkFillOk, '贴纸/文字也是框的子对象': frameChildrenOk, '改窗口后框排版守恒': frameKeepOk, 框选: marqueeOk, 中心准线: snapGuideOk, 框选存库: save2libOk, 往返一致: roundtripOk, 框选存库入口: save2libUiOk,                    画布随缩放等比: canvasZoomOk, '缩小/放大页面图不消失': zoomProbeOk, 横版拉满跟随: landFillOk, 图片拖进框自动铺满: fillFrameOk, 先拖图后开平台: ffLateOk, 框里拖图: imgDrag2Ok, '框+图整组拖': frameMoveOk, '相框等比缩放': frameScaleOk, 字体替代分平台: fontFallbackOk, 文字描边阴影尺度: textRenderOk, 窗口销毁安全: winLifeOk, 提取主体: subjectOk, 斜切: skewOk, 颜色板块: colorsOk, 图层小眼睛: layerEyeOk, 图层改名: layerRenameOk, '放大文字双击不变小': editScaleOk, '切分块照片不丢': splitSwitchOk, '格子里挪图不跑格': cellPanOk, '小红书1:1框': xhs11Ok, '点框=切数字+黄圈': clickFrameOk, '框编号同方向左边在前': biliNumOk, 奶油色主题: creamOk, '斜切后普通拖不错位': specialScaleOk, 右键斜切: ctxSkewOk, '选中文字点颜色跟着变': colorSelOk, '复制到别的框不出框': pasteFitOk, 图片斜切: imgSkewOk, 图层默认亮1: defTabOk, 分块: splitOk, 常驻颜色: colorPinsOk, '图层多选后复制粘贴': layerCopyOk, 主体阴影: subjShadowOk, '图片/贴纸描边阴影': imageFxOk, '右键复制色值': copyHexOk, '渐变小块色提得出': extractGreenOk, '提色板三排18格': board18Ok, '图层多选后画布上一起拖': layerMultiDragOk, '窗口只变宽图跟框': widenOnlyOk, 默认字体按使用次数: defaultFontOk, '字透明度/阴影透明度/阴影大小': textFxOk, 橡皮擦: eraserOk, 照片角外侧旋转: photoRotateOk, 吸管: eyedropOk, '勾平台框挪了框里东西跟着': toggleFollowOk, 检查更新: updateCheckOk, 形状: shapesOk, 'AI 调用(MCP)': mcpOk, 画布事务: agentTxOk, 自动排版落地: agentLayoutOk, 一键做封面: agentCreateOk, 自动接入Agent: agentRegOk, 'AI 抠主体': agentSubjectOk, 'AI 字体缺失提示': agentFontOk, '透明度 + 笔刷': agentOpacityOk, '文字/描边/阴影渐变': textGradOk, '最近文字样式记忆': textStyleMemoryOk, '框里的形状跟着缩放': frameShapeOk, 公众号: gzhOk, 对齐: alignOk, 字体样式: weightOk, 参考线: guidesOk, 'Shift 锁方向': shiftDragOk, 贴纸渐变: stickerGradOk, 形状同文字: shapeFxOk, 圆角: cornerOk, 气泡尾巴: bubbleTailOk, '系统剪贴板粘文字(微信复制→画布)': sysPasteOk, '模板导出/导入(.cmtpl 带图片)': tplIoOk, 'AI 斜切接口': agentSkewOk, '渐变角度盘': gradAngleOk, 模板带主体: tplSubjectOk, 帮助菜单: helpMenuOk, 字体菜单: fontMenuOk, '导入字体弹对话框(空清单不吞)': fontPlanOk, 导入字体: fontImportOk, '框外那截不可点(§0.99.21)': imgHitOk, 文件菜单: fileMenuOk
                 }));
