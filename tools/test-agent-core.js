@@ -84,7 +84,9 @@ async function run() {
   ];
   // 2026-11-11 第五批：复刻参考图（参考图层）
   const refNames = ['set_reference_image', 'clear_reference_image', 'measure_reference', 'compare_with_reference'];
-  const expectedToolNames = legacyNames.concat(existingAgentNames, fullAgentNames, parityNames, libraryNames, refNames);
+  // 2026-11-11：对齐 / 分布（用户实测笔记「Cmd 级手势/对齐没接口」）
+  const editExtraNames = ['align_elements'];
+  const expectedToolNames = legacyNames.concat(existingAgentNames, fullAgentNames, parityNames, libraryNames, refNames, editExtraNames);
   const actualToolNames = TOOLS.map((tool) => tool.name);
   assert.equal(TOOLS.length, expectedToolNames.length, 'Agent/MCP tool count follows the shared definition list');
   assert.equal(new Set(actualToolNames).size, TOOLS.length, 'Agent/MCP tool names are unique');

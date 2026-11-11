@@ -14579,6 +14579,97 @@ function createWindow() {
                     console.log('[cover-maker] selftest agentparity 判据:', JSON.stringify({ 没过的步: cp && cp.failed || ['无结果'], 'Agent能力补齐第三批': agentParityOk }));
                 }
 
+                // 实测补漏（2026-11-11，用户 Mac 测试笔记）：四角透视原来 schema 有、渲染层没接（假接口）；
+                //   形状 width/height 是「占框短边比例」，读回没这个口径 → 看着像「改不动」；对齐/分布没有工具
+                //   ① 文字四角透视：写 → 读回 → null 清除；形状必须拒绝
+                //   ② 形状宽高：w_side / h_side 与写入的 0.3 / 0.2 一致，改 0.5 / 0.1 后同步
+                //   ③ 对齐：3 个左对齐后 x 一致；vdist 后两个间距相等；2 个做分布必须拒；锁定时拒；非法 mode 拒
+                let agentWarpOk = true;
+                if (process.argv.includes('--agentwarp')) {
+                    let cw2 = { ok: false, failed: ['场景没有运行'] };
+                    try {
+                        cw2 = await jsx(`(async function () {
+                            var out = {}, failed = [];
+                            var call = function (n, a) { return window.__cmAgent.call(n, a || {}); };
+                            var el = function (id) { return (out.__c || { elements: [] }).elements.filter(function (x) { return x.id === id; })[0] || null; };
+                            var step = async function (l, f) {
+                                try { out[l] = await f(); }
+                                catch (e) { out[l] = { error: String(e && e.message || e), stack: String(e && e.stack || '').slice(0, 500) }; failed.push(l + ' 异常'); }
+                            };
+                            var reset = function () { layerNodes().forEach(function (n) { n.destroy(); }); tr.nodes([]); selectedNode = null; mainLayer.draw(); window.__cmHistoryReset(); };
+                            try {
+                                await call('set_platforms', { platforms: ['xiaohongshu'] });
+
+                                await step('四角透视', async function () {
+                                    reset();
+                                    var t = await call('add_text', { text: 'PERSP', frame: 1, size: 44, shadow: false });
+                                    var id = t.element.id;
+                                    var q = { top_left: { x: 0, y: 0.05 }, top_right: { x: 1, y: 0.15 }, bottom_right: { x: 0.92, y: 1 }, bottom_left: { x: 0.06, y: 0.9 } };
+                                    var up = await call('update_element', { id: id, warp_quad: q });
+                                    out.__c = await call('get_canvas'); var e = el(id);
+                                    var wq = e && e.warp_quad;
+                                    var okW = up.ok && wq && Math.abs(wq.top_right.y - 0.15) < 0.02
+                                        && Math.abs(wq.bottom_left.x - 0.06) < 0.02 && Math.abs(wq.bottom_right.x - 0.92) < 0.02;
+                                    var clr = await call('update_element', { id: id, warp_quad: null });
+                                    out.__c = await call('get_canvas'); var e2 = el(id);
+                                    var okC = clr.ok && !e2.warp_quad;
+                                    var sh = await call('add_shape', { shape: 'rect', frame: 1, width: 0.2, height: 0.2, fill: '#888888' });
+                                    var badW = await call('update_element', { id: sh.element.id, warp_quad: q });
+                                    var ok = okW && okC && badW.ok === false;
+                                    if (!ok) failed.push('四角透视（写/读回 / null 清除 / 形状必须拒）');
+                                    return { 读回: wq, 清除后: e2 && e2.warp_quad, 形状拒绝: badW.ok };
+                                });
+
+                                await step('形状宽高口径', async function () {
+                                    reset();
+                                    var sh = await call('add_shape', { shape: 'rect', frame: 1, width: 0.3, height: 0.2, fill: '#3366FF' });
+                                    var id = sh.element.id;
+                                    out.__c = await call('get_canvas'); var e0 = el(id);
+                                    var ok0 = Math.abs(e0.w_side - 0.3) < 0.02 && Math.abs(e0.h_side - 0.2) < 0.02;
+                                    await call('update_element', { id: id, width: 0.5, height: 0.1 });
+                                    out.__c = await call('get_canvas'); var e1 = el(id);
+                                    var ok1 = Math.abs(e1.w_side - 0.5) < 0.02 && Math.abs(e1.h_side - 0.1) < 0.02;
+                                    if (!(ok0 && ok1)) failed.push('形状宽高（w_side / h_side 与写入一致）');
+                                    return { 建: [e0.w, e0.h, e0.w_side, e0.h_side], 改后: [e1.w, e1.h, e1.w_side, e1.h_side] };
+                                });
+
+                                await step('对齐与分布', async function () {
+                                    reset();
+                                    var a = await call('add_text', { text: 'A', frame: 1, x: 0.2, y: 0.2, size: 30, shadow: false });
+                                    var b = await call('add_text', { text: 'B', frame: 1, x: 0.5, y: 0.45, size: 30, shadow: false });
+                                    var c = await call('add_text', { text: 'C', frame: 1, x: 0.8, y: 0.8, size: 30, shadow: false });
+                                    var ids = [a.element.id, b.element.id, c.element.id];
+                                    var al = await call('align_elements', { ids: ids, mode: 'left' });
+                                    out.__c = await call('get_canvas');
+                                    var xs = ids.map(function (k) { return el(k).x; });
+                                    var okLeft = al.ok && (Math.max.apply(null, xs) - Math.min.apply(null, xs)) < 0.02;
+                                    var vd = await call('align_elements', { ids: ids, mode: 'vdist' });
+                                    out.__c = await call('get_canvas');
+                                    var ys = ids.map(function (k) { return el(k).y; }).sort(function (p, q) { return p - q; });
+                                    var g1 = ys[1] - ys[0], g2 = ys[2] - ys[1];
+                                    var okDist = vd.ok && Math.abs(g1 - g2) < 0.02;
+                                    var two = await call('align_elements', { ids: [ids[0], ids[1]], mode: 'vdist' });
+                                    var bad = await call('align_elements', { ids: ids, mode: 'nope' });
+                                    await call('set_element_state', { id: ids[0], locked: true });
+                                    var locked = await call('align_elements', { ids: ids, mode: 'left' });
+                                    await call('set_element_state', { id: ids[0], locked: false });
+                                    var ok = okLeft && okDist && two.ok === false && bad.ok === false && locked.ok === false;
+                                    if (!ok) failed.push('对齐与分布（左对齐 / 等间距 / 两个不能分布 / 非法模式拒 / 锁定拒）');
+                                    return { 左对齐: okLeft, x: xs, 分布间距: [g1, g2], 两个分布: two.ok, 非法: bad.ok, 锁定: locked.ok };
+                                });
+                            } catch (e) { out['场景异常'] = String(e && e.stack || e); failed.push('总场景异常：' + String(e && e.message || e)); }
+                            finally { try { reset(); } catch (e) { /* 收尾 */ }
+                                      try { activePlatforms.slice().forEach(function (k) { togglePlatform(k); }); mainPlatform = null; syncPlatformMenu(); drawPlatformFrame(); } catch (e) { /* 同上 */ } }
+                            return { ok: failed.length === 0, failed: failed, detail: out };
+                        })()`);
+                    } catch (e) {
+                        cw2 = { ok: false, failed: ['主进程准备/执行异常：' + String(e && e.message || e)], detail: {} };
+                    }
+                    agentWarpOk = !!(cw2 && cw2.ok);
+                    console.log('[cover-maker] selftest agentwarp 明细:', JSON.stringify(cw2 && cw2.detail || {}));
+                    console.log('[cover-maker] selftest agentwarp 判据:', JSON.stringify({ 没过的步: cw2 && cw2.failed || ['无结果'], '四角透视 / 形状宽高口径 / 对齐分布': agentWarpOk }));
+                }
+
                 // Phase 1 第 2、3 件（2026-11-11）：measure_reference（参考图 → 数据）/ compare_with_reference（画布 vs 参考）
                 //   夹具在渲染层用 canvas 现画（不落盘）：300×400、底色 #F2F2F2、红块 0.10/0.08/0.45/0.20、
                 //   蓝块 0.10/0.35/0.80/0.15、40px 黑字在 y≈0.72
@@ -20266,13 +20357,13 @@ function createWindow() {
                     && frameWhiteOk
                     && r.stickers === stickerExpect
                     && libOk && libPasteOk && libRemoveOk && frameDragOk && stickerPasteOk && multiDragOk && skipOk && skipUiOk
-                    && textPasteOk && textEditOk && sidebarOk && auditOk && undoRedoOk && layerOrderOk && platCheckOk && layersOk                    && imgDropOk && frameStackOk && fillFrameOk && ffLateOk && imgDrag2Ok && frameMoveOk && frameScaleOk && exportOk && exportCancelOk && sharpOk && tplOk && fontUiOk && fontDockOk && ctPanelOk && dockLibsOk && fontWarnOk && whiteShadowOk && imgClipOk && decorClipOk && frameNosOk && layerMultiOk && textPathOk && imgOutOk && moveFrameOk && moveRightOk && shrinkFillOk && frameChildrenOk && frameKeepOk && copyPasteOk && tplRenameOk && zoomShiftOk && zoomShiftPosOk && platShareOk && qProbeOk && keyDelOk && strokeModeOk && macFontsOk && canvasZoomOk && zoomProbeOk && zoomFrameOk && landFillOk && marqueeOk && snapGuideOk && save2libOk && roundtripOk && save2libUiOk && fileMenuOk && fontMenuOk && fontPlanOk && fontImportOk && imgHitOk && fontFallbackOk && textRenderOk && winLifeOk && subjectOk && skewOk && colorsOk && layerEyeOk && layerRenameOk && editScaleOk && splitSwitchOk && cellPanOk && xhs11Ok && clickFrameOk && biliNumOk && creamOk && specialScaleOk && ctxSkewOk && colorSelOk && pasteFitOk && imgSkewOk && defTabOk && splitOk && colorPinsOk && layerCopyOk && subjShadowOk && imageFxOk && copyHexOk && extractGreenOk && board18Ok && layerMultiDragOk && widenOnlyOk && defaultFontOk && textFxOk && eraserOk && photoRotateOk && eyedropOk && toggleFollowOk && updateCheckOk && shapesOk && mcpOk && agentTxOk && agentLayoutOk && agentCreateOk && agentRegOk && agentSubjectOk && agentFontOk && agentOpacityOk && agentLayersOk && textGradOk && textStyleMemoryOk && frameShapeOk && gzhOk && customRatioOk && alignOk && weightOk && guidesOk && shiftDragOk && stickerGradOk && shapeFxOk && cornerOk && bubbleTailOk && tplSubjectOk && sysPasteOk && tplIoOk && agentSkewOk && agentCoreEditOk && agentCoreTools2Ok && agentParityOk && agentLibOk && agentRefOk && agentCopyOk && gradAngleOk;
+                    && textPasteOk && textEditOk && sidebarOk && auditOk && undoRedoOk && layerOrderOk && platCheckOk && layersOk                    && imgDropOk && frameStackOk && fillFrameOk && ffLateOk && imgDrag2Ok && frameMoveOk && frameScaleOk && exportOk && exportCancelOk && sharpOk && tplOk && fontUiOk && fontDockOk && ctPanelOk && dockLibsOk && fontWarnOk && whiteShadowOk && imgClipOk && decorClipOk && frameNosOk && layerMultiOk && textPathOk && imgOutOk && moveFrameOk && moveRightOk && shrinkFillOk && frameChildrenOk && frameKeepOk && copyPasteOk && tplRenameOk && zoomShiftOk && zoomShiftPosOk && platShareOk && qProbeOk && keyDelOk && strokeModeOk && macFontsOk && canvasZoomOk && zoomProbeOk && zoomFrameOk && landFillOk && marqueeOk && snapGuideOk && save2libOk && roundtripOk && save2libUiOk && fileMenuOk && fontMenuOk && fontPlanOk && fontImportOk && imgHitOk && fontFallbackOk && textRenderOk && winLifeOk && subjectOk && skewOk && colorsOk && layerEyeOk && layerRenameOk && editScaleOk && splitSwitchOk && cellPanOk && xhs11Ok && clickFrameOk && biliNumOk && creamOk && specialScaleOk && ctxSkewOk && colorSelOk && pasteFitOk && imgSkewOk && defTabOk && splitOk && colorPinsOk && layerCopyOk && subjShadowOk && imageFxOk && copyHexOk && extractGreenOk && board18Ok && layerMultiDragOk && widenOnlyOk && defaultFontOk && textFxOk && eraserOk && photoRotateOk && eyedropOk && toggleFollowOk && updateCheckOk && shapesOk && mcpOk && agentTxOk && agentLayoutOk && agentCreateOk && agentRegOk && agentSubjectOk && agentFontOk && agentOpacityOk && agentLayersOk && textGradOk && textStyleMemoryOk && frameShapeOk && gzhOk && customRatioOk && alignOk && weightOk && guidesOk && shiftDragOk && stickerGradOk && shapeFxOk && cornerOk && bubbleTailOk && tplSubjectOk && sysPasteOk && tplIoOk && agentSkewOk && agentCoreEditOk && agentCoreTools2Ok && agentParityOk && agentLibOk && agentRefOk && agentCopyOk && agentWarpOk && gradAngleOk;
                 console.log('[cover-maker] selftest 分项:', JSON.stringify({
                     基础: !!(r.konva && r.stage && r.bridge), 库面板: popupLayerOk, 底部格子: emptyBoxOk, 底边对齐: bottomOk, 启动开着的库: dockAtStart.currentLib, 框: (onlyArg || framedrag || multidrag || plArg ? r.frames > 0 : r.frames === 0), 框样式: frameWhiteOk,
                     贴纸数: r.stickers === stickerExpect, 素材库: libOk, 素材贴图: libPasteOk, 素材删除: libRemoveOk,
                     框不可拖: frameDragOk, 贴纸贴入: stickerPasteOk, 不叠画: multiDragOk, 拒收: skipOk, 拒收提示: skipUiOk,
                     复制粘贴: copyPasteOk,
-                    文字贴入: textPasteOk, 整组编辑: textEditOk, 左栏: sidebarOk, 体检: auditOk, 撤销重做: undoRedoOk, 'Agent核心编辑契约': agentCoreEditOk, 'Agent核心编辑契约第二组': agentCoreTools2Ok, 'Agent能力补齐第三批': agentParityOk, 'Agent库能力（字体/贴纸/自定义比例）': agentLibOk, '参考图层（复刻 Phase1-1）': agentRefOk, '复刻量测与比对（Phase1-2/3）': agentCopyOk,
+                    文字贴入: textPasteOk, 整组编辑: textEditOk, 左栏: sidebarOk, 体检: auditOk, 撤销重做: undoRedoOk, 'Agent核心编辑契约': agentCoreEditOk, 'Agent核心编辑契约第二组': agentCoreTools2Ok, 'Agent能力补齐第三批': agentParityOk, 'Agent库能力（字体/贴纸/自定义比例）': agentLibOk, '参考图层（复刻 Phase1-1）': agentRefOk, '复刻量测与比对（Phase1-2/3）': agentCopyOk, '四角透视 / 形状宽高口径 / 对齐分布': agentWarpOk,
                     层序: layerOrderOk, 图层面板: layersOk, 图片进画布: imgDropOk, 参考框: frameStackOk,
                     导出: exportOk, 导出取消: exportCancelOk, 清晰度: sharpOk, 模板: tplOk, 字体库改名: tplRenameOk, 缩放后照片不漂: zoomShiftOk, '页面/窗口变了框位置不变': zoomShiftPosOk, '同比例平台=同一块框': platShareOk, '导出不压缩画质(按目标像素重渲染)': qProbeOk, 'Delete/回车快捷删除': keyDelOk, '外描边/内描边': strokeModeOk, 'Mac 字体表读族名': macFontsOk, 字体: fontUiOk, 字体库格子: fontDockOk, '文字/阴影/描边分页': ctPanelOk, 三库切格子: dockLibsOk, 字体缺失提示: fontWarnOk, 白框立体感: whiteShadowOk, 图片只在框里显示: imgClipOk, '文字/贴纸只在框里显示': decorClipOk, '图层后框编号': frameNosOk, '图层多选/复制图层/拖到框编号复制': layerMultiOk, 文字路径: textPathOk, 图片能移到画布外: imgOutOk, '照片拖到另一块框也显示': moveFrameOk, '缩小后框能拖到画布最右边': moveRightOk, '缩框后照片仍盖满整块框线': shrinkFillOk, '贴纸/文字也是框的子对象': frameChildrenOk, '改窗口后框排版守恒': frameKeepOk, 框选: marqueeOk, 中心准线: snapGuideOk, 框选存库: save2libOk, 往返一致: roundtripOk, 框选存库入口: save2libUiOk,                    画布随缩放等比: canvasZoomOk, '缩小/放大页面图不消失': zoomProbeOk, 横版拉满跟随: landFillOk, 图片拖进框自动铺满: fillFrameOk, 先拖图后开平台: ffLateOk, 框里拖图: imgDrag2Ok, '框+图整组拖': frameMoveOk, '相框等比缩放': frameScaleOk, 字体替代分平台: fontFallbackOk, 文字描边阴影尺度: textRenderOk, 窗口销毁安全: winLifeOk, 提取主体: subjectOk, 斜切: skewOk, 颜色板块: colorsOk, 图层小眼睛: layerEyeOk, 图层改名: layerRenameOk, '放大文字双击不变小': editScaleOk, '切分块照片不丢': splitSwitchOk, '格子里挪图不跑格': cellPanOk, '小红书1:1框': xhs11Ok, '点框=切数字+黄圈': clickFrameOk, '框编号同方向左边在前': biliNumOk, 奶油色主题: creamOk, '斜切后普通拖不错位': specialScaleOk, 右键斜切: ctxSkewOk, '选中文字点颜色跟着变': colorSelOk, '复制到别的框不出框': pasteFitOk, 图片斜切: imgSkewOk, 图层默认亮1: defTabOk, 分块: splitOk, 常驻颜色: colorPinsOk, '图层多选后复制粘贴': layerCopyOk, 主体阴影: subjShadowOk, '图片/贴纸描边阴影': imageFxOk, '右键复制色值': copyHexOk, '渐变小块色提得出': extractGreenOk, '提色板三排18格': board18Ok, '图层多选后画布上一起拖': layerMultiDragOk, '窗口只变宽图跟框': widenOnlyOk, 默认字体按使用次数: defaultFontOk, '字透明度/阴影透明度/阴影大小': textFxOk, 橡皮擦: eraserOk, 照片角外侧旋转: photoRotateOk, 吸管: eyedropOk, '勾平台框挪了框里东西跟着': toggleFollowOk, 检查更新: updateCheckOk, 形状: shapesOk, 'AI 调用(MCP)': mcpOk, 画布事务: agentTxOk, 自动排版落地: agentLayoutOk, 一键做封面: agentCreateOk, 自动接入Agent: agentRegOk, 'AI 抠主体': agentSubjectOk, 'AI 字体缺失提示': agentFontOk, '透明度 + 笔刷': agentOpacityOk, '文字/描边/阴影渐变': textGradOk, '最近文字样式记忆': textStyleMemoryOk, '框里的形状跟着缩放': frameShapeOk, 公众号: gzhOk, 对齐: alignOk, 字体样式: weightOk, 参考线: guidesOk, 'Shift 锁方向': shiftDragOk, 贴纸渐变: stickerGradOk, 形状同文字: shapeFxOk, 圆角: cornerOk, 气泡尾巴: bubbleTailOk, '系统剪贴板粘文字(微信复制→画布)': sysPasteOk, '模板导出/导入(.cmtpl 带图片)': tplIoOk, 'AI 斜切接口': agentSkewOk, '渐变角度盘': gradAngleOk, 模板带主体: tplSubjectOk, 帮助菜单: helpMenuOk, 字体菜单: fontMenuOk, '导入字体弹对话框(空清单不吞)': fontPlanOk, 导入字体: fontImportOk, '框外那截不可点(§0.99.21)': imgHitOk, 文件菜单: fileMenuOk
                 }));

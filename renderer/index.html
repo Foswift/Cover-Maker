@@ -18906,6 +18906,14 @@ window.addEventListener('DOMContentLoaded', function () {
                 if (isBubbleShape(n)) { const bt = agentBubbleTailOut(n); if (bt) o.bubble_tail = bt; }
             }
             if (o.type === 'image') o.file = n.getAttr('srcName') || '';
+            // 2026-11-11：形状的 width / height 是「占框短边」的比例（不是占框宽/高）→ 读回 w_side / h_side，
+            //   不然 agent 按 0~1 相对宽高理解，会以为「形状宽高改不动」（实测 0.6/0.1 → 读回 0.6/0.075）
+            if (o.type === 'shape' && f) {
+                const ss = Math.min(f.rect.width, f.rect.height);
+                o.w_side = r3(b.width / ss); o.h_side = r3(b.height / ss);
+            }
+            const wqo = agentWarpRead(n);                                  // 四角透视：有变形才报
+            if (wqo) o.warp_quad = wqo;
             return o;
         }
         function agentCanvasElements() {
@@ -18982,6 +18990,41 @@ window.addEventListener('DOMContentLoaded', function () {
             return out;
         }
         function agentHex(c) { return /^#?[0-9a-f]{3}([0-9a-f]{3})?$/i.test(String(c || '')) ? toHex6(String(c).charAt(0) === '#' ? c : '#' + c) : null; }
+        // 四角透视（warp_quad）：agent 用「每个角落在元素自身盒子里的 0~1 位置」，内部存的是相对各自角的位移（局部 px）
+        //   ⚠ 以前 update_element 的 schema 里有 warp_quad、渲染层根本没接 → agent 调了返回 ok 但什么都不动（假接口）
+        function agentWarpBase(n) {
+            const W = Math.max(1, Math.abs(n.width())), Hh = Math.max(1, Math.abs(n.height()));
+            return { W: W, H: Hh, base: { tl: { x: 0, y: 0 }, tr: { x: W, y: 0 }, br: { x: W, y: Hh }, bl: { x: 0, y: Hh } } };
+        }
+        function agentApplyWarp(n, q) {
+            const { W, H: Hh, base } = agentWarpBase(n);
+            const key = { top_left: 'tl', top_right: 'tr', bottom_right: 'br', bottom_left: 'bl' };
+            const out = {};
+            Object.keys(key).forEach((k) => {
+                const c = q && q[k];
+                if (!c) return;
+                const x = Math.max(-0.5, Math.min(1.5, Number(c.x))), y = Math.max(-0.5, Math.min(1.5, Number(c.y)));
+                if (!isFinite(x) || !isFinite(y)) return;
+                const b = base[key[k]];
+                out[key[k]] = { dx: x * W - b.x, dy: y * Hh - b.y };
+            });
+            if (!Object.keys(out).length) return false;
+            n.setAttr('warpQuad', out);
+            if (typeof refreshWarpAnchor === 'function') { try { refreshWarpAnchor(n); } catch (e) { /* 只有照片需要补锚点 */ } }
+            return true;
+        }
+        function agentWarpRead(n) {
+            const q = (typeof warpQuadOf === 'function') ? warpQuadOf(n) : null;
+            if (!q) return null;
+            const { W, H: Hh, base } = agentWarpBase(n);
+            const key = { tl: 'top_left', tr: 'top_right', br: 'bottom_right', bl: 'bottom_left' };
+            const out = {};
+            Object.keys(key).forEach((k) => {
+                const c = q[k] || { dx: 0, dy: 0 };
+                out[key[k]] = { x: agentRound2((base[k].x + (c.dx || 0)) / W), y: agentRound2((base[k].y + (c.dy || 0)) / Hh) };
+            });
+            return out;
+        }
         // 自定义目标比例：id 或 key（custom_ratio_xxx）都能认
         function agentRatioRec(idOrKey) {
             const s = String(idOrKey == null ? '' : idOrKey).trim();
@@ -19782,6 +19825,14 @@ window.addEventListener('DOMContentLoaded', function () {
                     const i = agentInfo(n);
                     agentPlace(n, f, a.x != null ? a.x : (i.frame === f.no ? i.x : 0.5), a.y != null ? a.y : (i.frame === f.no ? i.y : 0.5));
                 }
+                if (a.warp_quad !== undefined) {                               // 2026-11-11 补：四角透视（之前 schema 有、这里没接 = 假接口）
+                    if (a.warp_quad === null) {
+                        n.setAttr('warpQuad', undefined);
+                        if (typeof refreshWarpAnchor === 'function') { try { refreshWarpAnchor(n); } catch (e) { /* 同上 */ } }
+                    } else if (typeof warpEligible === 'function' && !warpEligible(n)) {
+                        return { ok: false, error: '这个元素不能做四角透视（只有文字 / 贴纸 / 照片能）' };
+                    } else agentApplyWarp(n, a.warp_quad);
+                }
                 if (a.to_front) { n.moveToTop(); tr.moveToTop(); }
                 if (a.to_back) n.moveToBottom();
                 pushHistory('AI 修改', null);
@@ -20062,6 +20113,28 @@ window.addEventListener('DOMContentLoaded', function () {
                 const had = !!REF.on;
                 clearReferenceImage();
                 return { ok: true, cleared: had, reference: refInfo() };
+            },
+            // 对齐 / 分布（复用顶栏那 8 个按钮的 alignSelection：单选按所在框、多选按选区、分布要 ≥3 个）
+            align_elements(a) {
+                const ids = (Array.isArray(a.ids) ? a.ids : []).map((x) => String(x || '').trim()).filter(Boolean);
+                if (!ids.length) return { ok: false, error: 'ids 不能是空的（用 get_canvas 拿 id）' };
+                if (!ALIGN_NAMES[a.mode]) return { ok: false, error: 'mode 只能是：' + Object.keys(ALIGN_NAMES).join(' / ') };
+                const nodes = [];
+                for (const id of ids) {
+                    const n = agentNode(id);
+                    if (!n) return { ok: false, error: '没有这个 id：' + id + '（用 get_canvas 看）' };
+                    if (n.getAttr('locked')) return agentLockedError(n);
+                    if (n.getParent() !== mainLayer) return { ok: false, error: '这个元素不在画布上：' + id };
+                    nodes.push(n);
+                }
+                const prev = tr.nodes().slice();
+                tr.nodes(nodes);
+                const r = alignSelection(a.mode);
+                if (!r || !r.ok) {
+                    tr.nodes(prev);
+                    return { ok: false, error: r && r.reason === 'need3' ? '分布模式至少要 3 个元素' : '没对齐（先给 ids）' };
+                }
+                return { ok: true, mode: a.mode, count: r.count, elements: nodes.map(agentInfo) };
             },
             async measure_reference(a) { return await measureReference(a || {}); },
             async compare_with_reference(a) { return await compareWithReference(a || {}); },

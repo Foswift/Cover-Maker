@@ -76,7 +76,7 @@ const WARP_QUAD = {
   anyOf: [
     {
       type: 'object',
-      description: '四角透视变形；坐标是元素局部范围内的比例',
+      description: '四角透视变形：每个角落在元素**自身盒子**里的位置（0,0 = 左上角，1,1 = 右下角；不变形就是 0,0 / 1,0 / 1,1 / 0,1）。只能用在文字 / 贴纸 / 照片上',
       properties: {
         top_left: { type: 'object', properties: POS, required: ['x', 'y'] },
         top_right: { type: 'object', properties: POS, required: ['x', 'y'] },
@@ -221,8 +221,8 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: Object.assign({ id: { type: 'string' }, frame: FRAME }, POS, {
-        width: { type: 'number', description: '形状 / 贴纸 / 图片：长边占框短边的比例（形状同时给了 height 就是宽度）' },
-        height: { type: 'number', description: '只对形状：高度占框短边的比例' },
+        width: { type: 'number', description: '形状 / 贴纸 / 图片：长边占框**短边**的比例（形状同时给了 height 就是宽度）。⚠ 不是占框宽/框高；读回请看 w_side / h_side' },
+        height: { type: 'number', description: '只对形状：高度占框**短边**的比例（同上，读回看 h_side）' },
         rotation: { type: 'number', description: '旋转角度（度）' },
         text: { type: 'string', description: '文字 / 形状里的字' },
         color: COLOR('文字颜色 / 形状颜色'),
@@ -803,6 +803,20 @@ const TOOLS = [
         margin_right: { type: 'number', minimum: 0 },
         clear: { type: 'boolean', description: 'true = 先清掉现有参考线再加' }
       }
+    }
+  },
+  {
+    name: 'align_elements',
+    description: '把选中的几个元素对齐 / 分布（同顶栏那排对齐按钮）：只给 1 个 id 时对齐到它所在的那块框；给 2 个以上时对齐到这些元素的外接范围；分布（hdist / vdist）要至少 3 个，间距相等。',
+    annotations: WRITE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', minItems: 1, maxItems: 50, items: { type: 'string' }, description: '要一起对齐的元素 id（get_canvas 拿）' },
+        mode: { type: 'string', enum: ['left', 'hcenter', 'right', 'top', 'vcenter', 'bottom', 'hdist', 'vdist'],
+                description: 'left 左对齐 / hcenter 水平居中 / right 右对齐 / top 顶对齐 / vcenter 垂直居中 / bottom 底对齐 / hdist 水平分布 / vdist 垂直分布' }
+      },
+      required: ['ids', 'mode']
     }
   },
   {
