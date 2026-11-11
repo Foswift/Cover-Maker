@@ -85,7 +85,8 @@ async function run() {
   // 2026-11-11 第五批：复刻参考图（参考图层）
   const refNames = ['set_reference_image', 'clear_reference_image', 'measure_reference', 'compare_with_reference'];
   // 2026-11-11：对齐 / 分布（用户实测笔记「Cmd 级手势/对齐没接口」）
-  const editExtraNames = ['align_elements'];
+  // 2026-11-11：字段级能力被「只看工具名」的 agent 漏掉 → 斜切 / 尺寸的专用入口 + 能力表
+  const editExtraNames = ['align_elements', 'skew_element', 'resize_element', 'list_capabilities'];
   const expectedToolNames = legacyNames.concat(existingAgentNames, fullAgentNames, parityNames, libraryNames, refNames, editExtraNames);
   const actualToolNames = TOOLS.map((tool) => tool.name);
   assert.equal(TOOLS.length, expectedToolNames.length, 'Agent/MCP tool count follows the shared definition list');

@@ -16,7 +16,7 @@
 
 const http = require('http');
 const crypto = require('crypto');
-const { TOOLS, hasTool } = require('./agent-core/tool-definitions');
+const { TOOLS, hasTool, CAPABILITIES } = require('./agent-core/tool-definitions');
 const { TaskQueue } = require('./agent-core/task-queue');
 const { createCoverRunner } = require('./agent-core/create-cover');
 
@@ -103,6 +103,12 @@ module.exports = function createMcp(deps) {
         if (name === 'create_cover') return covers.createCover(args || {});
         if (name === 'get_agent_status') return agentStatus();
         if (name === 'cancel_cover_task') return covers.cancel(args && args.task_id);
+        if (name === 'list_capabilities') {                       // 字段级能力表（主进程侧答，唯一来源 = tool-definitions 的 CAPABILITIES）
+            const t = args && args.type ? String(args.type) : '';
+            if (t && !CAPABILITIES.element_types[t]) return { ok: false, error: '没有这一类：' + t + '（可用：' + Object.keys(CAPABILITIES.element_types).join(' / ') + '）' };
+            return { ok: true, note: CAPABILITIES.note, specialized_tools: CAPABILITIES.specialized_tools,
+                     element_types: t ? (function () { const o = {}; o[t] = CAPABILITIES.element_types[t]; return o; })() : CAPABILITIES.element_types };
+        }
         const r = name === 'export_images' ? await exportTo(args) : await callRenderer(name, args);
         if (name === 'screenshot' && r && r.ok && r.dataURL && args && args.save_to) {
             const to = String(args.save_to);

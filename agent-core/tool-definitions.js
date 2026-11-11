@@ -216,7 +216,7 @@ const TOOLS = [
   },
   {
     name: 'update_element',
-    description: '改一个已有元素（id 从 get_canvas 拿）：位置、大小、旋转、文字、颜色等。只写要改的字段。',
+    description: '改一个已有元素（id 从 get_canvas 拿）：位置、大小、旋转、**斜切（skew_x / skew_y）**、**四角透视（warp_quad）**、**形状宽高（width / height，占框短边）**、文字 / 字体 / 渐变 / 描边 / 圆角 / 线条端点 / 气泡尾巴等。只写要改的字段；不确定某类元素能改什么，调 list_capabilities。',
     annotations: WRITE_IDEMPOTENT,
     inputSchema: {
       type: 'object',
@@ -806,6 +806,47 @@ const TOOLS = [
     }
   },
   {
+    name: 'skew_element',
+    description: '把文字 / 形状 / 贴纸 / 照片**斜切**（就是 update_element 的 skew_x / skew_y 的专用入口，单位度，±75）：正 skew_x = 顶边右移（斜排标题 / 仿斜体），skew_y 正 = 左边下移。想做透视（四角不等变形）用 update_element 的 warp_quad。',
+    annotations: WRITE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '元素 id（get_canvas 拿）' },
+        skew_x: { type: 'number', minimum: -75, maximum: 75, description: '水平斜切（度），0 = 不斜' },
+        skew_y: { type: 'number', minimum: -75, maximum: 75, description: '垂直斜切（度），0 = 不斜' }
+      },
+      required: ['id']
+    }
+  },
+  {
+    name: 'resize_element',
+    description: '改元素**尺寸**：形状 / 贴纸 / 照片给 width / height（占框短边比例），或者直接给 width_px / height_px（画布像素，更好算）。即 update_element 尺寸字段的专用入口；读回看 w_side / h_side（占短边）或 w / h（占框宽高）。',
+    annotations: WRITE_IDEMPOTENT,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '元素 id' },
+        width: { type: 'number', description: '宽：占框**短边**的比例（0~3）' },
+        height: { type: 'number', description: '高：占框**短边**的比例（0~3）' },
+        width_px: { type: 'number', minimum: 2, maximum: 4000, description: '宽：画布像素（给了就按它换算成比例，优先于 width）' },
+        height_px: { type: 'number', minimum: 2, maximum: 4000, description: '高：画布像素（同上）' }
+      },
+      required: ['id']
+    }
+  },
+  {
+    name: 'list_capabilities',
+    description: '查「某类元素能改哪些字段」。agent 光看工具名会以为「没有斜切 / 没有尺寸接口」——斜切（skew_x / skew_y）、四角透视（warp_quad）、形状宽高（width / height）、渐变、圆角、线条端点、气泡尾巴其实都是 update_element 的**字段**。一次把所有字段和专用工具列出来。',
+    annotations: READ,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', description: '只看某一类：text / path_text / text_group / shape / image / sticker（不写 = 全部）' }
+      }
+    }
+  },
+  {
     name: 'align_elements',
     description: '把选中的几个元素对齐 / 分布（同顶栏那排对齐按钮）：只给 1 个 id 时对齐到它所在的那块框；给 2 个以上时对齐到这些元素的外接范围；分布（hdist / vdist）要至少 3 个，间距相等。',
     annotations: WRITE,
@@ -1020,10 +1061,27 @@ function deepFreeze(value, seen = new WeakSet()) {
 
 deepFreeze(TOOLS);
 
+// 字段级能力表（2026-11-11）：agent 只会按「工具名」找能力，`skew_x` / `width` 这种是 update_element 的**字段**，
+//   它看不见 → 会报「没有接口」。这份表给 list_capabilities 用，把「某类元素能改哪些字段」直接列出来。
+const CAPABILITIES = {
+  note: '这些都是 update_element 接受的字段（不是独立工具名）。另外 skew_element / resize_element 是斜切和尺寸的专用快捷工具，align_elements 管对齐分布。',
+  element_types: {
+    text: { fields: ['text', 'size', 'font', 'color', 'gradient', 'gradient.angle', 'letter_spacing', 'stroke', 'stroke_mode', 'stroke_gradient', 'align', 'opacity', 'shadow', 'rotation', 'skew_x', 'skew_y', 'warp_quad', 'x', 'y', 'frame', 'width', 'height', 'to_front', 'to_back'] },
+    path_text: { fields: ['text', 'size', 'font', 'color', 'stroke', 'stroke_mode', 'letter_spacing', 'opacity', 'shadow', 'rotation', 'skew_x', 'skew_y', 'warp_quad', 'x', 'y', 'frame'], note: '曲线本身在 add_text_path 的 points 里给；path_start 是字从曲线哪一点开始' },
+    text_group: { fields: ['text', 'size', 'color', 'opacity', 'rotation', 'x', 'y', 'frame'], note: '老的字幕组只能改这些' },
+    shape: { fields: ['width', 'height', 'x', 'y', 'frame', 'color', 'gradient', 'stroke', 'corner_radius', 'line_points', 'bubble_tail', 'text', 'text_color', 'text_size', 'rotation', 'skew_x', 'skew_y', 'opacity', 'shadow', 'to_front', 'to_back'], note: 'width / height 是占框**短边**比例（读回 w_side / h_side）；只要像素就调 resize_element 的 width_px / height_px' },
+    image: { fields: ['width', 'height', 'x', 'y', 'frame', 'opacity', 'rotation', 'skew_x', 'skew_y', 'warp_quad', 'stroke', 'shadow', 'to_front', 'to_back'], note: '取景用 fit_image_to_frame（zoom / focal / cell），擦除用 erase_element' },
+    sticker: { fields: ['width', 'height', 'x', 'y', 'frame', 'opacity', 'rotation', 'skew_x', 'skew_y', 'warp_quad', 'tint', 'tint_gradient', 'stroke', 'shadow', 'to_front', 'to_back'] }
+  },
+  specialized_tools: ['skew_element', 'resize_element', 'align_elements', 'fit_image_to_frame', 'erase_element', 'clear_erase',
+                      'set_element_state', 'duplicate_elements', 'set_layer_order', 'set_frame_transform',
+                      'add_text_path', 'sample_color', 'extract_palette', 'get_color_scheme', 'measure_reference', 'compare_with_reference']
+};
+
 const TOOL_NAMES = new Set(TOOLS.map((tool) => tool.name));
 
 function hasTool(name) {
   return TOOL_NAMES.has(name);
 }
 
-module.exports = { TOOLS, hasTool, deepFreeze, CUSTOM_STYLE };
+module.exports = { TOOLS, hasTool, deepFreeze, CUSTOM_STYLE, CAPABILITIES };

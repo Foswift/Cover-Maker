@@ -14082,10 +14082,11 @@ function createWindow() {
                     const nodeOf = (id) => jsx(`(function () { var n = layerNodes().filter(function (x) { return x.getAttr('aid') === ` + JSON.stringify(String(id)) + `; })[0];
                         return n ? { kx: Math.round(n.skewX() * 100) / 100, ky: Math.round(n.skewY() * 100) / 100 } : null; })()`);
                     const t1 = await A('add_text', { text: '斜切标题', frame: 1, y: 0.3, size: 40, shadow: false, skew_x: 18 });
-                    S.加字 = { ok: !!t1.ok, attr: t1.ok ? await nodeOf(t1.element.id) : null, 报kx: t1.element && t1.element.skew_x, 报x: t1.element && t1.element.x };
+                    S.加字 = { ok: !!t1.ok, attr: t1.ok ? await nodeOf(t1.element.id) : null, 报kx: t1.element && t1.element.skew_x, 报x: t1.element && t1.element.x, 报w: t1.element && t1.element.w, 报h: t1.element && t1.element.h };
                     const up1 = await A('update_element', { id: t1.element.id, skew_x: 20, skew_y: -12 });
                     S.改 = { ok: !!up1.ok, attr: await nodeOf(t1.element.id),
-                             报: { kx: up1.element && up1.element.skew_x, ky: up1.element && up1.element.skew_y, x: up1.element && up1.element.x } };
+                             报: { kx: up1.element && up1.element.skew_x, ky: up1.element && up1.element.skew_y, x: up1.element && up1.element.x,
+                                   w: up1.element && up1.element.w, h: up1.element && up1.element.h } };
                     const up2 = await A('update_element', { id: t1.element.id, skew_x: 120 });
                     S.夹 = { attr: await nodeOf(t1.element.id), 报kx: up2.element && up2.element.skew_x };
                     await jsx('window.__appCommand("undo")');
@@ -14657,6 +14658,26 @@ function createWindow() {
                                     if (!ok) failed.push('对齐与分布（左对齐 / 等间距 / 两个不能分布 / 非法模式拒 / 锁定拒）');
                                     return { 左对齐: okLeft, x: xs, 分布间距: [g1, g2], 两个分布: two.ok, 非法: bad.ok, 锁定: locked.ok };
                                 });
+                                await step('斜切与尺寸专用工具', async function () {
+                                    reset();
+                                    var t = await call('add_text', { text: 'SKEW2', frame: 1, size: 40, shadow: false });
+                                    out.__c = await call('get_canvas'); var pre = el(t.element.id);
+                                    var sk = await call('skew_element', { id: t.element.id, skew_x: 22, skew_y: -8 });
+                                    out.__c = await call('get_canvas'); var e = el(t.element.id);
+                                    // 斜切不该改变读回的宽高（以前 Konva 的 clientRect 会把 0.582 算成 4.367 → 还会误报「超出框」）
+                                    var okBox = Math.abs(e.w - pre.w) < 0.03 && Math.abs(e.h - pre.h) < 0.03 && !sk.warning;
+                                    var okSkew = sk.ok && e.skew_x === 22 && e.skew_y === -8 && okBox;
+                                    var sh = await call('add_shape', { shape: 'rect', frame: 1, width: 0.3, height: 0.2, fill: '#22AA55' });
+                                    var rz = await call('resize_element', { id: sh.element.id, width_px: 120, height_px: 60 });
+                                    out.__c = await call('get_canvas'); var e2 = el(sh.element.id);
+                                    var shortSide = Math.min((out.__c.frames || [{}])[0].rect.width, (out.__c.frames || [{}])[0].rect.height);
+                                    var okRz = rz.ok && Math.abs(e2.w_side - 120 / shortSide) < 0.02 && Math.abs(e2.h_side - 60 / shortSide) < 0.02;
+                                    var noArg = await call('resize_element', { id: sh.element.id });
+                                    var ok = okSkew && okRz && noArg.ok === false;
+                                    if (!ok) failed.push('斜切/尺寸专用工具（skew_element 读回 / resize_element 走像素 / 空参数拒）');
+                                    return { skew: [e.skew_x, e.skew_y], 斜切前后宽高: [[pre.w, pre.h], [e.w, e.h]],
+                                             尺寸: [e2.w_side, e2.h_side], 期望: [Math.round(120 / shortSide * 1000) / 1000, Math.round(60 / shortSide * 1000) / 1000], 空参数: noArg.ok };
+                                });
                             } catch (e) { out['场景异常'] = String(e && e.stack || e); failed.push('总场景异常：' + String(e && e.message || e)); }
                             finally { try { reset(); } catch (e) { /* 收尾 */ }
                                       try { activePlatforms.slice().forEach(function (k) { togglePlatform(k); }); mainPlatform = null; syncPlatformMenu(); drawPlatformFrame(); } catch (e) { /* 同上 */ } }
@@ -14665,6 +14686,19 @@ function createWindow() {
                     } catch (e) {
                         cw2 = { ok: false, failed: ['主进程准备/执行异常：' + String(e && e.message || e)], detail: {} };
                     }
+                    // 主进程侧：能力表（agent 说「没有斜切/尺寸接口」的根因就是它只看工具名）必须列出这些字段
+                    try {
+                        const rc = await MCP.handleRpc({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'list_capabilities', arguments: {} } });
+                        let vc = null; try { vc = JSON.parse(rc.result.content.find((c) => c.type === 'text').text); } catch (e) { vc = null; }
+                        const et = (vc && vc.element_types) || {};
+                        const has = (t, f) => !!((et[t] || {}).fields || []).indexOf(f) >= 0;
+                        const capOk = !!(vc && vc.ok && has('text', 'skew_x') && has('text', 'warp_quad')
+                            && has('shape', 'width') && has('shape', 'corner_radius') && has('image', 'warp_quad')
+                            && (vc.specialized_tools || []).indexOf('skew_element') >= 0 && (vc.specialized_tools || []).indexOf('resize_element') >= 0);
+                        cw2.detail = cw2.detail || {};
+                        cw2.detail['能力表'] = { 文本含斜切: has('text', 'skew_x'), 文本含透视: has('text', 'warp_quad'), 形状含宽高: has('shape', 'width'), 专用工具: vc && vc.specialized_tools };
+                        if (!capOk) { cw2.ok = false; (cw2.failed = cw2.failed || []).push('能力表 list_capabilities（要列出 skew_x / warp_quad / width / corner_radius 与专用工具）'); }
+                    } catch (e) { cw2.ok = false; (cw2.failed = cw2.failed || []).push('能力表异常：' + String(e && e.message || e)); }
                     agentWarpOk = !!(cw2 && cw2.ok);
                     console.log('[cover-maker] selftest agentwarp 明细:', JSON.stringify(cw2 && cw2.detail || {}));
                     console.log('[cover-maker] selftest agentwarp 判据:', JSON.stringify({ 没过的步: cw2 && cw2.failed || ['无结果'], '四角透视 / 形状宽高口径 / 对齐分布': agentWarpOk }));

@@ -18847,9 +18847,9 @@ window.addEventListener('DOMContentLoaded', function () {
         }
         // 改路径类属性（圆角 / 端点 / 尾巴）会让外框变 → 按外框中心回补一次，元素不飘（同斜切那条）
         function agentKeepCenter(n, fn) {
-            const b0 = n.getClientRect({ skipShadow: true, skipStroke: true });
+            const b0 = agentBoxOf(n);
             fn();
-            const b1 = n.getClientRect({ skipShadow: true, skipStroke: true });
+            const b1 = agentBoxOf(n);
             n.x(n.x() + (b0.x + b0.width / 2) - (b1.x + b1.width / 2));
             n.y(n.y() + (b0.y + b0.height / 2) - (b1.y + b1.height / 2));
         }
@@ -18858,7 +18858,7 @@ window.addEventListener('DOMContentLoaded', function () {
             const fr = frameOfNode(n);
             const gk = fr ? String(fr.gk).split('|').slice(-2).join('|') : '';
             const f = fs.find((x) => x.gk === gk) || null;
-            const b = n.getClientRect({ skipShadow: true, skipStroke: true });
+            const b = agentBoxOf(n);
             const o = { id: agentIdOf(n), type: agentType(n), role: agentRole(n), name: elementLabel(n), frame: f ? f.no : null,
                         z_index: n.zIndex(), visible: n.visible() };
             if (n.getAttr('locked')) o.locked = true;                                  // 2026-11-02 契约：锁定状态要读得到
@@ -18928,11 +18928,15 @@ window.addEventListener('DOMContentLoaded', function () {
         }
         // 把元素的中心挪到第 f 块框的 (x, y)（比例），再重认归属框
         function agentPlace(n, f, x, y) {
-            const b = n.getClientRect({ skipShadow: true, skipStroke: true });
             const fx = (x == null ? 0.5 : Number(x)), fy = (y == null ? 0.5 : Number(y));
             const cx = f.rect.x + fx * f.rect.width, cy = f.rect.y + fy * f.rect.height;
-            n.x(n.x() + cx - (b.x + b.width / 2));
-            n.y(n.y() + cy - (b.y + b.height / 2));
+            // 收敛 2~3 次：刚建出来的节点（还没画过）量出来的外框可能和放好之后的不一致，一次位移会差出半个元素
+            for (let i = 0; i < 3; i++) {
+                const b = agentBoxOf(n);
+                const dx = cx - (b.x + b.width / 2), dy = cy - (b.y + b.height / 2);
+                if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) break;
+                n.x(n.x() + dx); n.y(n.y() + dy);
+            }
             assignDecorHome(n, true);
         }
         // 把「刚做完的那一步」的快照重拍一遍（新建 + 改样式算一步撤销，不拆成两步）
@@ -18988,6 +18992,17 @@ window.addEventListener('DOMContentLoaded', function () {
                 out.push({ x: r3((p.x - f.rect.x) / f.rect.width), y: r3((p.y - f.rect.y) / f.rect.height) });
             });
             return out;
+        }
+        // 元素外框（agent 用的统一量法）：斜切过的节点 Konva 的 getClientRect 会算出离谱的宽
+        //   （实测 40px 文字 skew_x=22° → w 0.582 变 4.367，连带 agentResult 误报「超出框」）→ 量之前把 skew 归零、量完还原。
+        function agentBoxOf(n) {
+            if (!n || !n.getClientRect) return { x: 0, y: 0, width: 0, height: 0 };
+            const sx = typeof n.skewX === 'function' ? n.skewX() : 0, sy = typeof n.skewY === 'function' ? n.skewY() : 0;
+            if (!Math.abs(sx) && !Math.abs(sy)) return n.getClientRect({ skipShadow: true, skipStroke: true });
+            n.skewX(0); n.skewY(0);
+            const b = n.getClientRect({ skipShadow: true, skipStroke: true });
+            n.skewX(sx); n.skewY(sy);
+            return b;
         }
         function agentHex(c) { return /^#?[0-9a-f]{3}([0-9a-f]{3})?$/i.test(String(c || '')) ? toHex6(String(c).charAt(0) === '#' ? c : '#' + c) : null; }
         // 四角透视（warp_quad）：agent 用「每个角落在元素自身盒子里的 0~1 位置」，内部存的是相对各自角的位移（局部 px）
@@ -19242,7 +19257,7 @@ window.addEventListener('DOMContentLoaded', function () {
             if (n.name && n.name() === '贴纸' && n.getClassName() === 'Text') {
                 n.fontSize(want);
             } else {
-                const b = n.getClientRect({ skipShadow: true, skipStroke: true }), k = want / Math.max(1, b.width, b.height);
+                const b = agentBoxOf(n), k = want / Math.max(1, b.width, b.height);
                 n.scaleX(n.scaleX() * k); n.scaleY(n.scaleY() * k);
             }
         }
@@ -19256,9 +19271,9 @@ window.addEventListener('DOMContentLoaded', function () {
             const kx = a.skew_x != null ? cl(a.skew_x) : n.skewX();
             const ky = a.skew_y != null ? cl(a.skew_y) : n.skewY();
             if (Math.abs(kx - n.skewX()) < 0.01 && Math.abs(ky - n.skewY()) < 0.01) return false;
-            const b0 = n.getClientRect({ skipShadow: true, skipStroke: true });
+            const b0 = agentBoxOf(n);
             n.skewX(kx); n.skewY(ky);
-            const b1 = n.getClientRect({ skipShadow: true, skipStroke: true });
+            const b1 = agentBoxOf(n);
             n.x(n.x() + (b0.x + b0.width / 2) - (b1.x + b1.width / 2));
             n.y(n.y() + (b0.y + b0.height / 2) - (b1.y + b1.height / 2));
             return true;
@@ -19446,10 +19461,10 @@ window.addEventListener('DOMContentLoaded', function () {
                 n.text(String(a.text));
                 n.setAttr('agentRole', 'text');
                 agentStyleText(n, a);
-                agentApplySkew(n, a);
                 mainLayer.add(n);
                 tr.moveToTop();
-                agentPlace(n, fr.f, a.x, a.y);
+                agentPlace(n, fr.f, a.x, a.y);                                // 先按「没斜切」的外框摆好
+                agentApplySkew(n, a);                                         // 再斜切（斜切不再改外框，只按中心回补）
                 pushHistory('AI 加文字', null);
                 agentDone('加文字「' + String(a.text).slice(0, 10) + '」', n);
                 return agentResult(n);
@@ -19804,9 +19819,9 @@ window.addEventListener('DOMContentLoaded', function () {
                 }
                 if ((a.width != null || a.height != null) && f) agentResize(n, f, a.width, a.height);
                 if (a.rotation != null) {                                      // 绕中心转
-                    const b0 = n.getClientRect({ skipShadow: true, skipStroke: true });
+                    const b0 = agentBoxOf(n);
                     n.rotation(Number(a.rotation));
-                    const b1 = n.getClientRect({ skipShadow: true, skipStroke: true });
+                    const b1 = agentBoxOf(n);
                     n.x(n.x() + (b0.x + b0.width / 2) - (b1.x + b1.width / 2)); n.y(n.y() + (b0.y + b0.height / 2) - (b1.y + b1.height / 2));
                 }
                 agentApplySkew(n, a);                                         // 2026-11-02 斜切（度）
@@ -20113,6 +20128,29 @@ window.addEventListener('DOMContentLoaded', function () {
                 const had = !!REF.on;
                 clearReferenceImage();
                 return { ok: true, cleared: had, reference: refInfo() };
+            },
+            // 斜切 / 尺寸的专用入口（agent 只看工具名，会把「update_element 里的字段」当成没有接口）
+            skew_element(a) {
+                const n = agentNode(a.id);
+                if (!n) return { ok: false, error: '没有这个 id：' + a.id + '（用 get_canvas 看）' };
+                if (n.getAttr('locked')) return agentLockedError(n);
+                if (a.skew_x == null && a.skew_y == null) return { ok: false, error: 'skew_x / skew_y 至少给一个' };
+                return AGENT_TOOLS.update_element({ id: a.id, skew_x: a.skew_x, skew_y: a.skew_y });
+            },
+            resize_element(a) {
+                const n = agentNode(a.id);
+                if (!n) return { ok: false, error: '没有这个 id：' + a.id + '（用 get_canvas 看）' };
+                if (n.getAttr('locked')) return agentLockedError(n);
+                const i0 = agentInfo(n);
+                if (!i0.frame) return { ok: false, error: '这个元素不在任何框里，没法按框比例改尺寸' };
+                const fr = agentFrame(i0.frame); if (fr.err) return { ok: false, error: fr.err };
+                const ss = Math.max(1, Math.min(fr.f.rect.width, fr.f.rect.height));
+                let w = a.width == null ? null : Number(a.width), h = a.height == null ? null : Number(a.height);
+                if (a.width_px != null) w = Number(a.width_px) / ss;
+                if (a.height_px != null) h = Number(a.height_px) / ss;
+                if (w == null && h == null) return { ok: false, error: 'width / height / width_px / height_px 至少给一个' };
+                const clamp = (v) => Math.max(0.01, Math.min(3, v));
+                return AGENT_TOOLS.update_element({ id: a.id, width: w == null ? undefined : clamp(w), height: h == null ? undefined : clamp(h) });
             },
             // 对齐 / 分布（复用顶栏那 8 个按钮的 alignSelection：单选按所在框、多选按选区、分布要 ≥3 个）
             align_elements(a) {
