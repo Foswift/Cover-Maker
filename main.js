@@ -8795,7 +8795,8 @@ function createWindow() {
                 //   ① 顶栏 8 个按钮（左 / 水平居中 / 右 / 垂直居中分布 | 顶 / 垂直居中 / 底 / 水平居中分布），在「文字」左边（10-22 三改：和文字等图标下对齐、间距同 文字↔形状、不再和画布对齐）
                 //   ② 从画框外拉框 → 选中 文字 + 贴纸 + 形状 三个 → 8 个按钮挨个真点：对应的边 / 中心 / 中心间距都对齐；撤销一步 = 回到上一步
                 //   ③ 按住 ⌘（Windows = Ctrl）真点 文字、形状 → 只选这两个 → 顶对齐：两个顶边一样、贴纸不动
-                //   ④ 只选一个 → 水平居中 = 在它那块框里居中 ⑤ 什么都没选 → 点按钮不动、提示先选中
+                //   ④ 只选一个 → 水平居中 = 在它那块框里居中；但单个自动换行文字的左/中/右 = 改内部段落对齐，文字框位置不动
+                //   ⑤ 什么都没选 → 点按钮不动、提示先选中
                 let alignOk = true;
                 if (process.argv.includes('--align')) {
                     const A = (name, args) => jsx('window.__cmAgent.call(' + JSON.stringify(name) + ', ' + JSON.stringify(args || {}) + ')');
@@ -8865,6 +8866,25 @@ function createWindow() {
                     await press('hcenter');
                     const b5 = await boxes();
                     R.单个框内居中 = near(b5[1].cx, fr.fcx);
+                    // ④b 单个自动换行文字：水平三种对齐改的是文字框内部排版，不能把整个文字框挪到父画框边缘
+                    R.换行文字内部对齐 = await jsx(`(function () {
+                        var f = agentFrames()[0].rect, n = makeTextNode(f.x + f.width * 0.27, f.y + f.height * 0.34);
+                        n.text('这是一段会自动换行的测试文字'); n.width(105); n.wrap('char'); n.align('left'); mainLayer.add(n);
+                        tr.nodes([n]); selectedNode = n; mainLayer.batchDraw(); window.__alWrap = n;
+                        return { id: agentIdOf(n), lines: n.textArr && n.textArr.length, x: n.x(), y: n.y() };
+                    })()`);
+                    const wrapBefore = await jsx(`(function () { var n = window.__alWrap; return n ? { x:n.x(), y:n.y(), align:n.align() } : null; })()`);
+                    await press('right');
+                    const wrapRight = await jsx(`(function () { var n = window.__alWrap; return n ? { x:n.x(), y:n.y(), align:n.align() } : null; })()`);
+                    await press('hcenter');
+                    const wrapCenter = await jsx(`(function () { var n = window.__alWrap; return n ? { x:n.x(), y:n.y(), align:n.align() } : null; })()`);
+                    await press('left');
+                    const wrapLeft = await jsx(`(function () { var n = window.__alWrap; return n ? { x:n.x(), y:n.y(), align:n.align() } : null; })()`);
+                    R.换行文字内部对齐ok = R.换行文字内部对齐 && R.换行文字内部对齐.lines > 1
+                        && wrapBefore && wrapRight && wrapCenter && wrapLeft
+                        && wrapRight.align === 'right' && wrapCenter.align === 'center' && wrapLeft.align === 'left'
+                        && [wrapRight, wrapCenter, wrapLeft].every((q) => near(q.x, wrapBefore.x) && near(q.y, wrapBefore.y));
+                    await jsx(`(function () { if (window.__alWrap) window.__alWrap.destroy(); window.__alWrap = null; tr.nodes([]); selectedNode = null; mainLayer.batchDraw(); return true; })()`);
                     // ⑤ 什么都没选
                     await jsx('(function () { tr.nodes([]); selectedNode = null; refreshLayers(); return true; })()');
                     const b6 = await boxes();
@@ -8892,7 +8912,8 @@ function createWindow() {
                     if (!R.宽窄不一分布ok) okR.push('宽窄不一的三段字：分布 = 空隙相等、中间的往右挪');
                     if (JSON.stringify(R.多选) !== JSON.stringify([ids[0], ids[2]].sort())) okR.push('⌘/Ctrl 点选两个');
                     if (!R.多选顶对齐) okR.push('多选后顶对齐、没选的不动');
-                    if (JSON.stringify(R.单选) !== JSON.stringify([ids[1]]) || !R.单个框内居中) okR.push('只选一个 = 在框里居中');
+                    if (JSON.stringify(R.单选) !== JSON.stringify([ids[1]]) || !R.单个框内居中) okR.push('只选一个普通元素 = 在框里居中');
+                    if (!R.换行文字内部对齐ok) okR.push('单个自动换行文字：左/中/右只改内部排版，文字框位置不动');
                     if (!R.没选不动) okR.push('没选中 = 不动 + 提示');
                     alignOk = okR.length === 0;
                     console.log('[cover-maker] selftest align 明细:', JSON.stringify(R));

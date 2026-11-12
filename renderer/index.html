@@ -1613,9 +1613,9 @@ window.addEventListener('DOMContentLoaded', function () {
             <!-- 对齐（用户 2026-10-22 加；同日三改位置：「和文字等图标下对齐…放在文字左边，距离和文字与形状图标一样」）：
                  放在 .header-tools 里「文字」前面；图标底边、和「文字」的间距由 positionAlignTools() 量着对齐 -->
             <div class="align-tools" id="alignTools">
-                <button type="button" class="align-btn" data-align="left" title="左对齐（先拉框或按住 ⌘ / Ctrl 点选要对齐的元素；只选一个 = 对齐到它所在的画框）"><svg viewBox="0 0 20 20" width="20" height="20" fill="currentColor" stroke="none" aria-hidden="true"><rect x="2.4" y="2" width="1.3" height="16"/><rect x="5" y="5.5" width="7" height="2.6"/><rect x="5" y="11.9" width="12" height="2.6"/></svg></button>
-                <button type="button" class="align-btn" data-align="hcenter" title="水平居中对齐（先拉框或按住 ⌘ / Ctrl 点选要对齐的元素；只选一个 = 对齐到它所在的画框）"><svg viewBox="0 0 20 20" width="20" height="20" fill="currentColor" stroke="none" aria-hidden="true"><rect x="9.35" y="2" width="1.3" height="16"/><rect x="6" y="5.5" width="8" height="2.6"/><rect x="3.5" y="11.9" width="13" height="2.6"/></svg></button>
-                <button type="button" class="align-btn" data-align="right" title="右对齐（先拉框或按住 ⌘ / Ctrl 点选要对齐的元素；只选一个 = 对齐到它所在的画框）"><svg viewBox="0 0 20 20" width="20" height="20" fill="currentColor" stroke="none" aria-hidden="true"><rect x="16.3" y="2" width="1.3" height="16"/><rect x="8" y="5.5" width="7" height="2.6"/><rect x="3" y="11.9" width="12" height="2.6"/></svg></button>
+                <button type="button" class="align-btn" data-align="left" title="左对齐（单个换行文字 = 文字框内部左对齐；其他单选元素 = 对齐到所在画框；多选 = 元素左边缘对齐）"><svg viewBox="0 0 20 20" width="20" height="20" fill="currentColor" stroke="none" aria-hidden="true"><rect x="2.4" y="2" width="1.3" height="16"/><rect x="5" y="5.5" width="7" height="2.6"/><rect x="5" y="11.9" width="12" height="2.6"/></svg></button>
+                <button type="button" class="align-btn" data-align="hcenter" title="水平居中对齐（单个换行文字 = 文字框内部居中；其他单选元素 = 对齐到所在画框；多选 = 元素中心对齐）"><svg viewBox="0 0 20 20" width="20" height="20" fill="currentColor" stroke="none" aria-hidden="true"><rect x="9.35" y="2" width="1.3" height="16"/><rect x="6" y="5.5" width="8" height="2.6"/><rect x="3.5" y="11.9" width="13" height="2.6"/></svg></button>
+                <button type="button" class="align-btn" data-align="right" title="右对齐（单个换行文字 = 文字框内部右对齐；其他单选元素 = 对齐到所在画框；多选 = 元素右边缘对齐）"><svg viewBox="0 0 20 20" width="20" height="20" fill="currentColor" stroke="none" aria-hidden="true"><rect x="16.3" y="2" width="1.3" height="16"/><rect x="8" y="5.5" width="7" height="2.6"/><rect x="3" y="11.9" width="12" height="2.6"/></svg></button>
                 <button type="button" class="align-btn" data-align="vdist" title="垂直分布：上下空隙一样大（先拉框或按住 ⌘ / Ctrl 点选要对齐的元素；只选一个 = 对齐到它所在的画框）"><svg viewBox="0 0 20 20" width="20" height="20" fill="currentColor" stroke="none" aria-hidden="true"><rect x="2" y="3" width="16" height="1.3"/><rect x="2" y="15.7" width="16" height="1.3"/><rect x="5" y="8.7" width="10" height="2.6"/></svg></button>
                 <span class="align-sep" aria-hidden="true"></span>
                 <button type="button" class="align-btn" data-align="top" title="顶部对齐（先拉框或按住 ⌘ / Ctrl 点选要对齐的元素；只选一个 = 对齐到它所在的画框）"><svg viewBox="0 0 20 20" width="20" height="20" fill="currentColor" stroke="none" aria-hidden="true"><rect x="2" y="2.4" width="16" height="1.3"/><rect x="5.5" y="5" width="2.6" height="12"/><rect x="11.9" y="5" width="2.6" height="7"/></svg></button>
@@ -5911,6 +5911,20 @@ window.addEventListener('DOMContentLoaded', function () {
             if (!nodes.length) { hintStatus('先选中要对齐的元素：在画框外拉框，或按住 ' + (IS_MAC_UI ? '⌘' : 'Ctrl') + ' 点选'); return { ok: false, reason: 'none' }; }
             const dist = mode === 'vdist' || mode === 'hdist';
             if (dist && nodes.length < 3) { hintStatus(ALIGN_NAMES[mode] + '要选中至少 3 个元素'); return { ok: false, reason: 'need3' }; }
+            // 单个文字已经自动/手动换成多行时，水平三按钮控制的是**文字框内部段落对齐**，不能把整个文字框挪到父画框边缘。
+            // `textArr` 是 Konva 排版后的真实行数组，既覆盖显式换行，也覆盖固定宽度造成的自动换行。
+            const paragraphAlign = { left: 'left', hcenter: 'center', right: 'right' }[mode];
+            const singleWrappedText = nodes.length === 1 && paragraphAlign && isTextNode(nodes[0]) && nodes[0].name() === '文字'
+                && Array.isArray(nodes[0].textArr) && nodes[0].textArr.length > 1;
+            if (singleWrappedText) {
+                nodes[0].align(paragraphAlign);
+                if (tr) tr.forceUpdate();
+                mainLayer.batchDraw();
+                pushHistory('文字' + ALIGN_NAMES[mode], 'align:' + paragraphAlign);
+                refreshLayers();
+                hintStatus('换行文字内部' + ALIGN_NAMES[mode] + '（文字框位置不变）');
+                return { ok: true, count: 1, paragraph: true };
+            }
             const boxes = nodes.map(alignBoxOf);
             let ref;
             if (nodes.length === 1) {
@@ -12299,6 +12313,9 @@ window.addEventListener('DOMContentLoaded', function () {
             if (REF.layer || !stage) return REF.layer;
             REF.layer = new Konva.Layer({ name: '参考图层', listening: false });
             stage.add(REF.layer);
+            // 参考图永远压在内容上面、但必须在**参考线层下面**：后加的图层会盖住之前加的，
+            //   所以这里顺手把参考线层抬回最上面（否则叠了参考图就看/拖不到参考线 → 「参考线用不起」）
+            if (typeof GUIDE !== 'undefined' && GUIDE && GUIDE.layer) GUIDE.layer.moveToTop();
             return REF.layer;
         }
         function refLayout() {
@@ -12350,6 +12367,7 @@ window.addEventListener('DOMContentLoaded', function () {
             REF.opacity = op; REF.mode = mode;
             REF.node = new Konva.Image({ image: ld.im, opacity: op, listening: false, name: '参考图' });
             L.add(REF.node);
+            if (typeof GUIDE !== 'undefined' && GUIDE && GUIDE.layer) GUIDE.layer.moveToTop();   // 参考线保持在最上面
             refLayout();
             refSideDom(mode === 'side');
             hintStatus('参考图已放好（' + (mode === 'side' ? '右侧对照' : '叠在画布上，不透明度 ' + Math.round(op * 100) + '%') + '，不进出品）');
@@ -19737,7 +19755,13 @@ window.addEventListener('DOMContentLoaded', function () {
             // 参考线：prefs 用 GUIDE.prefs（本机 cm_guidePrefs_v1），线用 GUIDE.list（{axis, fk, t}）
             get_guides() {
                 const fs = agentFrames();
+                const lay = (typeof GUIDE !== 'undefined' && GUIDE && GUIDE.layer) ? GUIDE.layer : null;
+                const kids = lay ? lay.getChildren().length : 0;
                 return { ok: true,
+                    // 2026-11-11：诊断用 —— 没线的时候先看这三项：层在不在、显示没显示、是不是被别的层压住了
+                    layer: { exists: !!lay, visible: lay ? lay.visible() : false, children: kids,
+                             topmost: !!(lay && stage && stage.getLayers()[stage.getLayers().length - 1] === lay) },
+                    prefs_saved: (function () { try { return JSON.parse(localStorage.getItem('cm_guidePrefs_v1') || 'null'); } catch (e) { return null; } })(),
                     preferences: { show: !!GUIDE.prefs.show, snap: !!GUIDE.prefs.snap, lock: !!GUIDE.prefs.lock, rulers: !!GUIDE.prefs.rulers, smart: !!GUIDE.prefs.smart },
                     frames: fs.map((f) => ({ no: f.no, ratio: f.ratio })),
                     guides: GUIDE.list.map((g) => ({ id: String(g.id), orientation: g.axis === 'v' ? 'vertical' : 'horizontal',
